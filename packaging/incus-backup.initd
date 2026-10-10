@@ -1,0 +1,65 @@
+#!/sbin/openrc-run
+# incus-backup client daemon: scheduled backups and verification of this
+# Incus host. Runs as ROOT on purpose:
+#   * the Incus unix socket (/var/lib/incus/unix.socket) is root:incus 0660
+#     and grants full Incus admin; the daemon creates/deletes snapshots
+#   * reading container/volume snapshot contents needs every file readable
+#     regardless of owner (CAP_DAC_READ_SEARCH), and ZFS snapshots are
+#     mounted read-only with mount(2) (CAP_SYS_ADMIN)
+#   * /etc/incus-backup/key.json (the encryption key) is root-only
+# A reduced capability bounding set is available in conf.d
+# (INCUS_BACKUP_CAPABILITIES) but is NOT the default: it is not validated on
+# a real host yet, and a missing capability fails backups.
+
+name="incus-backup"
+description="incus-backup client (scheduled encrypted Incus backups)"
+
+: ${INCUS_BACKUP_CONFIG:=/etc/incus-backup/client.yaml}
+: ${INCUS_BACKUP_LOG:=/var/log/incus-backup/client.log}
+
+supervisor=supervise-daemon
+command="/usr/bin/incus-backup"
+command_args="--config ${INCUS_BACKUP_CONFIG} daemon ${INCUS_BACKUP_OPTS}"
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="${INCUS_BACKUP_LOG}"
+error_log="${INCUS_BACKUP_LOG}"
+umask=077
+
+# The client never executes other programs, so it never needs to gain
+# privileges through exec.
+no_new_privs=yes
+if [ -n "${INCUS_BACKUP_CAPABILITIES}" ]; then
+	capabilities="${INCUS_BACKUP_CAPABILITIES}"
+fi
+
+# Unconditional, see incus-backup-server's init script: Alpine's rc.conf sets
+# respawn_delay=2 respawn_max=5 for every service.
+respawn_delay="${INCUS_BACKUP_RESPAWN_DELAY:-30}"
+respawn_max="${INCUS_BACKUP_RESPAWN_MAX:-0}"
+respawn_period="${INCUS_BACKUP_RESPAWN_PERIOD:-1800}"
+# SIGTERM cancels the running backup; the client then releases its
+# snapshots and server sessions. Give it time before SIGKILL.
+retry="${INCUS_BACKUP_STOP_RETRY:-TERM/120/KILL/5}"
+
+depend() {
+	need localmount net
+	use incusd logger dns
+	after incusd zfs-mount
+}
+
+start_pre() {
+	if [ ! -r "${INCUS_BACKUP_CONFIG}" ]; then
+		eerror "${INCUS_BACKUP_CONFIG} does not exist yet: enrol this host first with"
+		eerror "  incus-backup init --server HOST:8007 --token TOKEN"
+		eerror "(the token comes from \`incus-backup-server token create <host> --scope backup\`)"
+		return 1
+	fi
+	for f in "${INCUS_BACKUP_CONFIG}" /etc/conf.d/"${RC_SVCNAME}"; do
+		if [ -e "$f.apk-new" ]; then
+			ewarn "$f.apk-new exists: a package upgrade shipped a new version of this file; merge it by hand (diff $f $f.apk-new)"
+		fi
+	done
+	checkpath --directory --owner root:root --mode 0700 /var/lib/incus-backup
+	checkpath --directory --owner root:root --mode 0755 "${INCUS_BACKUP_LOG%/*}"
+	checkpath --file --owner root:root --mode 0640 "${INCUS_BACKUP_LOG}"
+}

@@ -1,0 +1,34 @@
+#!/bin/sh
+# The package ships these directories already; re-asserting owner and mode
+# here also repairs an install whose state directory existed before.
+# Nothing is ever deleted.
+install -d -o incus-backup -g incus-backup -m 0750 /var/lib/incus-backup-server
+install -d -o root -g root -m 0755 /etc/incus-backup /var/log/incus-backup
+
+cat <<'MSG'
+
+incus-backup-server is installed but not configured.
+
+ 1. PostgreSQL (any reachable server; for this host: apk add postgresql postgresql-client),
+    then create a role and a database, e.g.
+      rc-update add postgresql && rc-service postgresql start
+      su postgres -c "createuser --pwprompt incus_backup"
+      su postgres -c "createdb --owner incus_backup incus_backup"
+    Alpine's initdb TRUSTS all local and localhost connections: tighten
+    /etc/postgresql/pg_hba.conf (scram-sha-256) and rc-service postgresql reload.
+ 2. Initialise (CA, server certificate, schema, first repository, server.yaml):
+      incus-backup-server init \
+        --database-url 'postgres://incus_backup:PASSWORD@127.0.0.1/incus_backup?sslmode=disable' \
+        --datastore /srv/incus-backup --san backup.example.net
+ 3. Start it:
+      rc-update add incus-backup-server && rc-service incus-backup-server start
+ 4. Enrol a host:  incus-backup-server token create HOST --scope backup
+ 5. Web UI: first login with the one-time setup token, see
+      /usr/share/doc/incus-backup-server/packaging.md ("Web UI").
+
+Ports: 8007/tcp (agent API, mutual TLS), 8443/tcp (web UI).
+Keep a copy of /var/lib/incus-backup-server (secrets.key, ca.key) and a
+PostgreSQL dump: see packaging.md ("Backing up the server itself").
+
+MSG
+exit 0

@@ -1,0 +1,32 @@
+# OpenRC settings of the incus-backup client daemon. NOT the client
+# configuration: that is /etc/incus-backup/client.yaml (written by
+# `incus-backup init`); policies come from the control server.
+
+# Client configuration file (default /etc/incus-backup/client.yaml).
+#INCUS_BACKUP_CONFIG="/etc/incus-backup/client.yaml"
+
+# Daemon output, rotated by /etc/logrotate.d/incus-backup.
+#INCUS_BACKUP_LOG="/var/log/incus-backup/client.log"
+
+# Extra arguments for `incus-backup daemon` (e.g. --debug).
+#INCUS_BACKUP_OPTS=""
+
+# Stop schedule: SIGTERM cancels the running backup, which then cleans up.
+#INCUS_BACKUP_STOP_RETRY="TERM/120/KILL/5"
+
+# Respawn after a crash (MAX=0: never give up; rc.conf's respawn_* are overridden).
+#INCUS_BACKUP_RESPAWN_DELAY=30
+#INCUS_BACKUP_RESPAWN_MAX=0
+#INCUS_BACKUP_RESPAWN_PERIOD=1800
+
+# Optional capability restriction (libcap IAB text, see supervise-daemon(8)).
+# The daemon needs, as far as the code shows (UNVALIDATED on a real host;
+# a missing capability makes backups fail, so test with `rc-service
+# incus-backup restart` and a manual `incus-backup run` first):
+#   cap_sys_admin        mount(2) of ZFS snapshots (read-only)
+#   cap_dac_read_search  read every file of container/volume snapshots
+#   cap_dac_override     the Incus socket and root-owned state when the
+#                        effective uid is not the file owner
+#   cap_fowner, cap_chown  spool and state handling
+# Example: drop capabilities the daemon has no use for from the bounding set:
+#INCUS_BACKUP_CAPABILITIES="!cap_net_admin,!cap_net_raw,!cap_sys_module,!cap_sys_rawio,!cap_sys_boot,!cap_sys_time,!cap_mknod,!cap_setuid,!cap_setgid,!cap_setpcap,!cap_sys_ptrace,!cap_bpf,!cap_perfmon"

@@ -1,0 +1,9 @@
+#!/bin/sh
+# Stop the server before its binary disappears. Data is NEVER removed:
+# /var/lib/incus-backup-server, /etc/incus-backup, the datastore, the
+# PostgreSQL database and the incus-backup account all stay.
+if [ -x /etc/init.d/incus-backup-server ] && command -v rc-service >/dev/null 2>&1; then
+	rc-service incus-backup-server --ifstarted stop || true
+fi
+echo "incus-backup-server removed; state in /var/lib/incus-backup-server, /etc/incus-backup and PostgreSQL is kept."
+exit 0

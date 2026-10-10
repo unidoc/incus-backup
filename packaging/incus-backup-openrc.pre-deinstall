@@ -1,0 +1,10 @@
+#!/bin/sh
+# Stop the service while its init script still exists. When the main package
+# is removed, apk removes this -openrc package (installed through install_if)
+# FIRST, so the main package's pre-deinstall can no longer find
+# /etc/init.d/incus-backup (found by the smoke test: a running server survived
+# `apk del`). Nothing else is touched; data always stays.
+if [ -x /etc/init.d/incus-backup ] && command -v rc-service >/dev/null 2>&1; then
+	rc-service incus-backup --ifstarted stop || true
+fi
+exit 0

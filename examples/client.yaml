@@ -1,0 +1,51 @@
+# /etc/incus-backup/client.yaml  (written by `incus-backup init`)
+host: benfica                      # the name this host presents to the servers
+state_dir: /var/lib/incus-backup
+spool_dir: /var/lib/incus-backup/spool   # captured chunks wait here between freeze and upload
+key_file: /etc/incus-backup/key.json     # the encryption key. BACK UP THE RECOVERY KEY, not this file.
+# passphrase_file: /etc/incus-backup/passphrase   # only if the key file is passphrase protected
+max_freeze: 15m                    # a run that holds the VM's frozen view longer is aborted
+max_target_lag: 168h               # a target unreachable longer than this gets a full read when it returns
+verify_schedule: weekly            # deep verification: download, decrypt, recompute chunk ids
+
+incus:
+  socket: ""                       # empty = autodetect (/var/lib/incus/unix.socket, /run/incus/unix.socket)
+  # projects: [custody]            # only these projects (default: all)
+
+servers:                           # every server is a complete, independent repository
+  cikarang:
+    address: backup.example.net:8007
+  # amsterdam:
+  #   address: backup2.example.org:8007
+  #   key_file: /etc/incus-backup/key-amsterdam.json   # a different key domain is allowed
+control: cikarang                  # supplies policies and assignments (what to back up)
+
+# How containers and filesystem volumes are backed up (all optional):
+# filesystem:
+#   format: catalog                # catalog (default: change detection, browsing, single-file restore) | tar
+#   full_every: 168h               # read every file again at least this often (metadata equality is a hint, not proof)
+#   trust_ctime: true              # also compare ctime and inode when deciding a file is unchanged
+#
+# Worker pools (all optional; 0 or absent = the measured defaults, see docs/performance.md):
+# performance:
+#   encode_workers: 4              # chunks compressed+encrypted at once (CPU of this host)
+#   upload_workers: 16             # chunk uploads in flight per server
+#
+# Single-file recovery from VM disks (a disposable VM without network reads the disk):
+# recovery:
+#   image: images:alpine/edge/cloud   # needs cloud-init, tar and drivers for the guest filesystem
+#   pool: default                     # pool for the scratch volumes
+#   memory: 512MiB
+#
+# Host jobs the servers may ask for (docs/jobs.md). Without `allow` only backup_now, restore_test and
+# deep_verify run; restore_* create Incus objects, guest_files/fs_extract hand file contents to the holder
+# of the job's browser key.
+# jobs:
+#   disabled: false
+#   allow: [backup_now, restore_test, deep_verify, restore_instance, restore_volume, guest_files, fs_extract]
+#
+# Optional local policies (used when the control server does not define the name).
+# Retention is NOT here: each server applies its own retention policy.
+# policies:
+#   nightly: {schedule: "03:00", targets: [cikarang], commit_required: all}
+# default_policy: nightly          # applied to everything without another policy

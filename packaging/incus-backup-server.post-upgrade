@@ -1,0 +1,40 @@
+#!/bin/sh
+# Apply database migrations with the NEW binary. Safe by construction:
+#   * skipped when the server was never initialised or has no database_url
+#   * migrations are transactional and serialised by a PostgreSQL advisory
+#     lock, so a running daemon or CLI command next to it cannot race
+#   * bounded by a timeout (an unreachable database must not hang apk)
+#   * never fails the upgrade: on error it says what to run by hand
+#     (`serve` and every CLI command migrate on start anyway)
+# It never restarts the service: the OLD daemon keeps running until
+# `rc-service incus-backup-server restart`.
+new="$1" old="$2"
+INCUS_BACKUP_SERVER_CONFIG=/etc/incus-backup/server.yaml
+[ -r /etc/conf.d/incus-backup-server ] && . /etc/conf.d/incus-backup-server
+cfg="$INCUS_BACKUP_SERVER_CONFIG"
+
+if [ ! -e "$cfg" ]; then
+	echo "incus-backup-server: $cfg does not exist (not initialised): no migration needed"
+	exit 0
+fi
+# The value of database_url: (last one wins, quotes and comments stripped).
+url=$(sed -n 's/^[[:space:]]*database_url:[[:space:]]*//p' "$cfg" | tail -n1 | sed 's/[[:space:]]#.*//; s/^#.*//; s/^["'"'"']//; s/["'"'"'][[:space:]]*$//; s/[[:space:]]*$//')
+if [ -z "$url" ]; then
+	echo "incus-backup-server: no database_url in $cfg: no migration run"
+	exit 0
+fi
+
+echo "incus-backup-server: $old -> $new: applying database migrations"
+# env -u: a DATABASE_URL left in the administrator's shell must never point
+# the migration at a different database than server.yaml does.
+if timeout "${INCUS_BACKUP_MIGRATE_TIMEOUT:-300}" env -u INCUS_BACKUP_DATABASE_URL -u DATABASE_URL \
+	su -s /bin/sh incus-backup -c "/usr/bin/incus-backup-server --config '$cfg' migrate"; then
+	if [ -e /run/incus-backup-server.pid ] || rc-service -q incus-backup-server status >/dev/null 2>&1; then
+		echo "incus-backup-server: the running server is still $old: rc-service incus-backup-server restart"
+	fi
+else
+	echo "incus-backup-server: WARNING: migration did not complete (database unreachable?)." >&2
+	echo "  Run it by hand once PostgreSQL is up:  incus-backup-server migrate" >&2
+	echo "  (the server also migrates on its next start)" >&2
+fi
+exit 0

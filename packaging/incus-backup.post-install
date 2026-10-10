@@ -1,0 +1,17 @@
+#!/bin/sh
+install -d -o root -g root -m 0700 /var/lib/incus-backup
+install -d -o root -g root -m 0755 /etc/incus-backup /var/log/incus-backup
+
+cat <<'MSG'
+
+incus-backup (client) is installed but this host is not enrolled yet.
+
+ 1. On the server:  incus-backup-server token create HOST --scope backup
+ 2. Here (as root): incus-backup init --server SERVER:8007 --token TOKEN
+    It creates the encryption key and prints the RECOVERY KEY once:
+    store it offline, without it the backups cannot be decrypted.
+ 3. incus-backup doctor   (checks Incus, servers, key, policies)
+ 4. rc-update add incus-backup && rc-service incus-backup start
+
+MSG
+exit 0
