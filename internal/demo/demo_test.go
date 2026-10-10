@@ -499,3 +499,33 @@ func (w *webClient) job(who string, req map[string]any) *jobs.Job {
 		time.Sleep(100 * time.Millisecond)
 	}
 }
+
+// The seeded volume tree must equal its latest snapshot whatever the hour of the day the demo starts
+// (the e2e test compares them file by file). At 22:47 the evening churn of "today" has no night backup
+// after it, which the seed used to leave behind as edited files that are not in any snapshot.
+func TestSeedKeepsTheVolumeTreeEqualToItsLatestSnapshotAtAnyHour(t *testing.T) {
+	minioBin := os.Getenv("INCUS_BACKUP_TEST_MINIO")
+	if minioBin == "" {
+		t.Fatal("INCUS_BACKUP_TEST_MINIO must name a MinIO binary: the demo's second repository is an S3 one")
+	}
+	old := seedNow
+	defer func() { seedNow = old }()
+	today := time.Now().UTC().Truncate(24 * time.Hour)
+	for _, hm := range []time.Duration{22*time.Hour + 47*time.Minute, 10*time.Hour + 30*time.Minute} {
+		at := today.Add(hm)
+		seedNow = func() time.Time { return at }
+		dir, err := os.MkdirTemp("", "ibdemo-hour-*")
+		if err != nil {
+			t.Fatal(err)
+		}
+		st, err := Start(context.Background(), Options{Dir: dir, Web: "127.0.0.1:0", Seed: true, Profile: TestProfile(), Minio: minioBin,
+			Socket: filepath.Join(dir, "a.sock")})
+		if err == nil {
+			st.Close()
+		}
+		os.RemoveAll(dir)
+		if err != nil {
+			t.Errorf("seeding at %s: %v", at.Format("15:04"), err)
+		}
+	}
+}

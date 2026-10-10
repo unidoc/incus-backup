@@ -233,7 +233,7 @@ func Start(ctx context.Context, opt Options) (st *Stack, err error) {
 
 	seeding := opt.Seed && !s.State.Seeded
 	if seeding {
-		s.Clock = NewSimClock(seedStart(time.Now(), opt.Profile))
+		s.Clock = NewSimClock(seedStart(seedNow(), opt.Profile))
 	} else {
 		s.Clock = NewRealClock()
 	}

@@ -54,6 +54,9 @@ func TestProfile() Profile {
 	return Profile{Name: "test", Days: 5, DiskUnit: 8 << 20, DataDiv: 8, TreeFiles: 300, TreeLargeMiB: 2, ContainerFiles: 40, HourlyHours: 6}
 }
 
+// seedNow is "now" for the seed (a test pins it to check the seed at any hour of the day).
+var seedNow = time.Now
+
 // seedStart is the first simulated hour: Days before now.
 func seedStart(now time.Time, p Profile) time.Time {
 	return now.Truncate(time.Hour).Add(-time.Duration(p.Days) * 24 * time.Hour)
@@ -158,22 +161,23 @@ type simHost struct {
 }
 
 type seeder struct {
-	s       *Stack
-	p       Profile
-	ctx     context.Context
-	clock   *Clock
-	start   time.Time
-	t0      time.Time
-	keys    *format.Keys
-	hosts   map[string]*simHost
-	order   []string
-	runner  *maint.Runner
-	facts   *SeedFacts
-	dir     string
-	trees   map[string]string // host/project/name -> live directory of a filesystem object
-	log     *slog.Logger
-	mib     int64
-	offsite string
+	lastTreeChurn time.Time // simulated time of the last edit of the volume trees
+	s             *Stack
+	p             Profile
+	ctx           context.Context
+	clock         *Clock
+	start         time.Time
+	t0            time.Time
+	keys          *format.Keys
+	hosts         map[string]*simHost
+	order         []string
+	runner        *maint.Runner
+	facts         *SeedFacts
+	dir           string
+	trees         map[string]string // host/project/name -> live directory of a filesystem object
+	log           *slog.Logger
+	mib           int64
+	offsite       string
 	// timings of the seed phases (progress output)
 	runnerDur, syncWait time.Duration
 }
@@ -186,7 +190,7 @@ func (s *Stack) seed(ctx context.Context) error {
 	p := s.Opt.Profile
 	start := s.Clock.Now()
 	t0 := start.Add(time.Duration(p.Days) * 24 * time.Hour)
-	if real := time.Now().Truncate(time.Minute); real.After(t0) {
+	if real := seedNow().Truncate(time.Minute); real.After(t0) {
 		t0 = real
 	}
 	keys, err := format.DeriveKeys(demoMaster())
@@ -433,7 +437,7 @@ func (sd *seeder) simulate() error {
 		}
 		// guest activity in the evening, before the 03:00 nightly
 		if t.Hour() == 22 {
-			if err := sd.dailyChurn(d); err != nil {
+			if err := sd.dailyChurn(d, !t.Add(nightBackupsDone).After(sd.t0)); err != nil {
 				return err
 			}
 			if t.Equal(rotWrite) {
@@ -576,12 +580,21 @@ func (sd *seeder) wanted(t, hourlyFrom time.Time) bool {
 
 func (sd *seeder) rotOffset() int { return rotOffset(sd.p) }
 
+// nightBackupsDone is how long after the 22:00 churn the night's backups (01:30-03:00) are finished.
+const nightBackupsDone = 5 * time.Hour
+
 // dailyChurn is one day of guest writes: a rewritten text region and a growing log per VM, edited
-// files in the volumes and containers.
-func (sd *seeder) dailyChurn(d int) error {
+// files in the volumes and containers. The files are only edited when a night's backup follows before
+// "now": a demo started at 22:47 must not hold edits that no snapshot contains (the volume tree is
+// compared with its latest snapshot).
+func (sd *seeder) dailyChurn(d int, editFiles bool) error {
 	for _, h := range sd.order {
 		vmChurn(sd.hosts[h].inc, h, sd.p, d)
 	}
+	if !editFiles {
+		return nil
+	}
+	sd.lastTreeChurn = sd.clock.Now()
 	for k, dir := range sd.trees {
 		n := 3
 		if k == "benfica/default/volume/nextcloud-data" {
@@ -705,6 +718,11 @@ func (sd *seeder) finish() error {
 	}
 	sort.Slice(l, func(i, j int) bool { return l[i].SnapshotID < l[j].SnapshotID })
 	sd.facts.FSObject = SnapRef{Repository: "custody", Object: "benfica/default/volume/nextcloud-data", Group: g, Snapshot: l[len(l)-1].SnapshotID}
+	// the e2e tests and the demo compare the tree on disk with the latest snapshot: an edit after it would
+	// make them differ (the evening churn at 22:00 when "now" is later than that and no night has followed)
+	if at, err := time.Parse("20060102150405", l[len(l)-1].SnapshotID[:14]); err != nil || sd.lastTreeChurn.After(at) {
+		return fmt.Errorf("the volume tree was edited at %s, after its latest snapshot %s", sd.lastTreeChurn.Format(time.RFC3339), l[len(l)-1].SnapshotID)
+	}
 	var found string
 	_ = filepath.Walk(sd.trees["benfica/default/volume/nextcloud-data"], func(p string, fi os.FileInfo, err error) error {
 		if err == nil && fi.Mode().IsRegular() && filepath.Base(p) == sd.facts.FSFile && found == "" {
