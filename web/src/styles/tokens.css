@@ -1,0 +1,159 @@
+/* incus-backup console design tokens.
+ *
+ * Identity: "control room": calm, dense, information first. A blue-slate neutral ramp (hue ~245,
+ * very low chroma) so greys feel cool and deliberate rather than dead; one petrol accent (hue ~215)
+ * for interaction only; status colours (ok/warn/critical/info/neutral) are a separate set and never
+ * used for decoration. Small radii, hairline borders, almost no shadows.
+ *
+ * Rules for section code: never write a raw colour, use these variables. Status meaning always has a
+ * second channel (icon or text), never colour alone.
+ */
+:root {
+  /* type */
+  --font-sans: 'IBM Plex Sans', system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'IBM Plex Mono', ui-monospace, 'SFMono-Regular', Menlo, monospace;
+  --fs-xs: 11.5px;   /* table meta, axis labels */
+  --fs-sm: 12.5px;   /* secondary text, pills, labels */
+  --fs-md: 13.5px;   /* body / table cells (dense console default) */
+  --fs-lg: 15px;     /* panel titles */
+  --fs-xl: 18px;     /* page title */
+  --fs-2xl: 24px;    /* stat values */
+  --fs-3xl: 32px;    /* headline number */
+  --lh-tight: 1.2;
+  --lh: 1.45;
+  --fw-regular: 400;
+  --fw-medium: 500;
+  --fw-semibold: 600;
+
+  /* space (4 px grid) */
+  --s-1: 4px; --s-2: 8px; --s-3: 12px; --s-4: 16px; --s-5: 20px; --s-6: 24px; --s-8: 32px; --s-10: 40px;
+
+  /* shape */
+  --r-sm: 3px;
+  --r: 5px;
+  --r-lg: 7px;
+  --r-pill: 999px;
+
+  /* layout */
+  --sidebar-w: 232px;
+  --topbar-h: 48px;
+  --content-max: 1480px;
+  --gutter: 24px;
+  --row-h: 36px;       /* table row height (dense) */
+  --control-h: 32px;   /* buttons, inputs */
+  --control-h-sm: 26px;
+
+  /* motion */
+  --ease: cubic-bezier(.2, .7, .2, 1);
+  --t-fast: 120ms;
+  --t: 180ms;
+
+  --z-sidebar: 30; --z-topbar: 40; --z-drawer: 60; --z-modal: 70; --z-palette: 80; --z-toast: 90; --z-tooltip: 100;
+}
+
+/* ---- light (default) -------------------------------------------------------------------- */
+:root,
+:root[data-theme='light'] {
+  color-scheme: light;
+  --bg: oklch(97.4% 0.005 245);
+  --surface: oklch(100% 0 0);
+  --surface-2: oklch(98.3% 0.004 245);   /* table header, subtle fills */
+  --surface-3: oklch(95.6% 0.007 245);   /* hover, sunken areas */
+  --border: oklch(91.5% 0.008 245);
+  --border-strong: oklch(84% 0.012 245);
+  --text: oklch(24% 0.022 250);
+  --text-2: oklch(38% 0.02 250);
+  --text-muted: oklch(50% 0.017 250);
+  --text-faint: oklch(63% 0.013 250);
+  --grid: oklch(93.5% 0.006 245);        /* chart grid lines */
+
+  --accent: oklch(47% 0.1 225);
+  --accent-hover: oklch(41% 0.1 225);
+  --accent-soft: oklch(95.5% 0.022 225);
+  --accent-text: oklch(42% 0.1 225);
+  --on-accent: #fff;
+  --focus: oklch(56% 0.14 235);
+
+  --ok: oklch(54% 0.12 155);       --ok-bg: oklch(96% 0.03 155);       --ok-border: oklch(85% 0.06 155);       --ok-text: oklch(42% 0.1 155);
+  --warn: oklch(72% 0.15 70);      --warn-bg: oklch(96.5% 0.04 80);    --warn-border: oklch(85% 0.09 75);      --warn-text: oklch(48% 0.11 60);
+  --critical: oklch(56% 0.19 25);  --critical-bg: oklch(96% 0.025 20); --critical-border: oklch(84% 0.07 20);  --critical-text: oklch(47% 0.17 25);
+  --info: oklch(55% 0.13 255);     --info-bg: oklch(96% 0.022 255);    --info-border: oklch(85% 0.05 255);     --info-text: oklch(45% 0.13 255);
+  --neutral: oklch(60% 0.012 250); --neutral-bg: oklch(95.5% 0.006 250); --neutral-border: oklch(87% 0.01 250); --neutral-text: oklch(42% 0.016 250);
+
+  /* categorical chart series, fixed order, validated (lightness band, chroma, CVD and normal-vision
+     separation) against both surfaces. Four slots: a 5th series folds into "Other" (--series-other).
+     Never use status colours as series. Series 4 is below 3:1 on white: charts always ship a table view. */
+  --series-1: #006aa0;
+  --series-2: #029e72;
+  --series-3: #8f5fc0;
+  --series-4: #d0901e;
+  --series-other: oklch(70% 0.01 250);
+
+  /* sidebar is ink in both themes: the frame recedes, content is the light surface */
+  --nav-bg: oklch(23.5% 0.026 252);
+  --nav-bg-hover: oklch(29% 0.028 252);
+  --nav-bg-active: oklch(32% 0.034 245);
+  --nav-text: oklch(84% 0.014 250);
+  --nav-text-muted: oklch(64% 0.018 250);
+  --nav-text-active: oklch(98% 0.004 250);
+  --nav-marker: oklch(72% 0.11 210);
+  --nav-border: oklch(30% 0.026 252);
+
+  --shadow-1: 0 1px 2px oklch(30% 0.02 250 / .06);
+  --shadow-pop: 0 4px 12px -2px oklch(30% 0.03 250 / .14), 0 12px 32px -8px oklch(30% 0.03 250 / .18);
+  --scrim: oklch(20% 0.02 250 / .42);
+  --skeleton: oklch(94% 0.006 245);
+  --skeleton-hi: oklch(97% 0.004 245);
+  --code-bg: oklch(97% 0.006 245);
+}
+
+/* ---- dark ---------------------------------------------------------------------------------- */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+  --bg: oklch(17.5% 0.013 252);
+  --surface: oklch(21% 0.015 252);
+  --surface-2: oklch(23% 0.016 252);
+  --surface-3: oklch(26.5% 0.018 252);
+  --border: oklch(29.5% 0.018 252);
+  --border-strong: oklch(37% 0.02 252);
+  --text: oklch(93% 0.008 250);
+  --text-2: oklch(82% 0.012 250);
+  --text-muted: oklch(68% 0.014 250);
+  --text-faint: oklch(56% 0.014 250);
+  --grid: oklch(27% 0.016 252);
+
+  --accent: oklch(68% 0.11 225);
+  --accent-hover: oklch(74% 0.1 225);
+  --accent-soft: oklch(30% 0.045 230);
+  --accent-text: oklch(78% 0.1 225);
+  --on-accent: oklch(17% 0.02 250);
+  --focus: oklch(72% 0.13 230);
+
+  --ok: oklch(70% 0.14 155);       --ok-bg: oklch(27% 0.045 160);      --ok-border: oklch(40% 0.07 158);       --ok-text: oklch(80% 0.13 155);
+  --warn: oklch(79% 0.14 75);      --warn-bg: oklch(29% 0.05 70);      --warn-border: oklch(44% 0.08 70);      --warn-text: oklch(85% 0.13 78);
+  --critical: oklch(68% 0.18 25);  --critical-bg: oklch(28% 0.06 22);  --critical-border: oklch(43% 0.1 22);   --critical-text: oklch(80% 0.13 25);
+  --info: oklch(70% 0.12 255);     --info-bg: oklch(28% 0.05 258);     --info-border: oklch(42% 0.07 258);     --info-text: oklch(81% 0.1 255);
+  --neutral: oklch(62% 0.014 250); --neutral-bg: oklch(27% 0.014 252); --neutral-border: oklch(38% 0.016 252); --neutral-text: oklch(80% 0.012 250);
+
+  --series-1: #3a95cd;
+  --series-2: #24ab7e;
+  --series-3: #9a6ec9;
+  --series-4: #c0851f;
+  --series-other: oklch(55% 0.012 250);
+
+  --nav-bg: oklch(15.5% 0.014 252);
+  --nav-bg-hover: oklch(21% 0.016 252);
+  --nav-bg-active: oklch(25% 0.026 245);
+  --nav-text: oklch(82% 0.012 250);
+  --nav-text-muted: oklch(60% 0.016 250);
+  --nav-text-active: oklch(97% 0.004 250);
+  --nav-marker: oklch(74% 0.11 210);
+  --nav-border: oklch(23% 0.016 252);
+
+  --shadow-1: 0 1px 2px oklch(0% 0 0 / .3);
+  --shadow-pop: 0 4px 12px -2px oklch(0% 0 0 / .45), 0 16px 40px -8px oklch(0% 0 0 / .55);
+  --scrim: oklch(8% 0.01 250 / .6);
+  --skeleton: oklch(25% 0.015 252);
+  --skeleton-hi: oklch(29% 0.016 252);
+  --code-bg: oklch(18.5% 0.014 252);
+}

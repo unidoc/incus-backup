@@ -1,0 +1,42 @@
+{
+  "name": "@incus-backup/web-crypto",
+  "version": "0.1.0",
+  "description": "Zero-knowledge browsing, single-file download and unsealing of incus-backup repositories in the browser (Go WebAssembly + TypeScript)",
+  "license": "SEE LICENSE IN ../LICENSE.md",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./worker": "./dist/worker.js",
+    "./wasm/ibwasm.wasm": "./wasm/ibwasm.wasm",
+    "./wasm/wasm_exec.js": "./wasm/wasm_exec.js"
+  },
+  "files": [
+    "dist",
+    "wasm",
+    "README.md"
+  ],
+  "scripts": {
+    "build:wasm": "sh scripts/build-wasm.sh",
+    "build": "npm run build:wasm && tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.test.json",
+    "fixture": "sh scripts/fixture.sh",
+    "chromium-libs": "python3 scripts/chromium-libs.py",
+    "test": "vitest run",
+    "test:browser": "npm run build && node browser/run.mjs",
+    "bench": "npm run build && node bench/node.mjs && node browser/run.mjs --bench"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "devDependencies": {
+    "@types/node": "^24.19.1",
+    "playwright-core": "^1.64.0",
+    "typescript": "^5.9.3",
+    "vitest": "^3.2.7"
+  }
+}
