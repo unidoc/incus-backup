@@ -1,0 +1,20 @@
+name: Embeddable web UI dist
+description: >
+  internal/server/webui embeds dist/ (go:embed all:dist), so Go code only compiles when that
+  directory holds at least one file (a tracked .keep does that). The built UI is never in git, so jobs
+  that do not build it get a PLACEHOLDER UI from here (which scripts/release.sh refuses to ship).
+  The web and e2e jobs build the real UI instead.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        d=internal/server/webui/dist
+        if [ -f "$d/index.html" ]; then
+          echo "using the built UI in $d"
+        else
+          mkdir -p "$d"
+          printf '<!doctype html><html><head><title>incus-backup</title></head><body>placeholder UI (CI)</body></html>\n' > "$d/index.html"
+          : > "$d/PLACEHOLDER"
+          echo "::notice::$d has no built UI: wrote a placeholder UI for compiling and testing the Go code"
+        fi

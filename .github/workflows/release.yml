@@ -1,0 +1,153 @@
+name: Release
+
+# Pushing a tag vX.Y.Z (apk syntax: 1.2.3 or 1.2.3_rc1, equal to version.txt):
+#   1. ci        the whole CI workflow (ci.yml via workflow_call): nothing is built for release
+#                unless every test job passes on the tagged commit;
+#   2. build     scripts/release.sh: source tarball with vendor/ and the built web UI, static
+#                binaries for linux/amd64 + linux/arm64 (arm64 executed under qemu-user), SHA256SUMS,
+#                RELEASE_NOTES.md, BUILDINFO and the unidoc-aports handoff
+#                (incus-backup-VERSION-aports.tar.gz = dist/aports/incus-backup/);
+#   3. publish   minisign signatures (below), then the GitHub release with every asset.
+# The Alpine packages are then built and signed by unidoc-aports from the aports tarball
+# (docs/packaging.md, "Handoff to unidoc-aports").
+#
+# Signing setup (once, by an admin; same rules as alpine-zfsboot, docs/packaging.md):
+#   1. `minisign -G -W -p incus-backup.pub -s incus-backup.key` locally, never in CI.
+#   2. Environment "signing": secret INCUS_BACKUP_MINISIGN_KEY = the content of
+#      incus-backup.key (an ENVIRONMENT secret, not a repository secret).
+#   3. Deployment branches and tags of that environment: only the tag rule `v*`,
+#      plus a tag ruleset that limits who may create refs/tags/v*.
+#   4. Repository variable INCUS_BACKUP_MINISIGN_PUBLIC_KEY = the second line of
+#      incus-backup.pub. Every signature is verified against it before publishing.
+# Once the public-key variable exists, signing is MANDATORY: an empty secret fails the release.
+# Only while neither the variable nor the secret is configured is the release published unsigned
+# (with a warning on the run). Only the `publish` job has the secret in scope; the build job has none.
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  ci:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+    permissions:
+      contents: read
+
+  build:
+    needs: ci
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      GOTOOLCHAIN: local
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          # No module cache in the release build: every module comes from the proxy, checked against go.sum.
+          cache: false
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+      - name: qemu-user (to execute the arm64 binaries)
+        run: sudo apt-get update && sudo apt-get install -y qemu-user-static file binutils
+      - name: Tag must match version.txt
+        run: |
+          want="${GITHUB_REF_NAME#v}"
+          got="$(tr -d '[:space:]' < version.txt)"
+          [ "$got" = "$want" ] || { echo "::error::tag $GITHUB_REF_NAME does not match version.txt ($got)"; exit 1; }
+      - name: Build the release (unsigned)
+        run: QEMU_AARCH64="$(command -v qemu-aarch64-static)" bash scripts/release.sh "${GITHUB_REF_NAME#v}"
+      - name: Release notes must come from CHANGELOG.md
+        run: |
+          if grep -q 'TODO: release notes' dist/RELEASE_NOTES.md; then
+            echo "::error::CHANGELOG.md has no section for ${GITHUB_REF_NAME#v}"
+            exit 1
+          fi
+      - name: Every expected asset is there
+        run: |
+          v="${GITHUB_REF_NAME#v}"
+          cd dist
+          for f in "incus-backup-$v.tar.gz" "incus-backup-$v-aports.tar.gz" SHA256SUMS RELEASE_NOTES.md BUILDINFO \
+                   "incus-backup-$v-linux-amd64" "incus-backup-$v-linux-arm64" \
+                   "incus-backup-server-$v-linux-amd64" "incus-backup-server-$v-linux-arm64"; do
+            [ -f "$f" ] || { echo "::error::dist/$f is missing"; exit 1; }
+          done
+          tar -xzOf "incus-backup-$v-aports.tar.gz" incus-backup/APKBUILD | grep -q "^pkgver=$v\$"
+          sha256sum -c SHA256SUMS
+      - uses: actions/upload-artifact@v7
+        with:
+          name: dist
+          # The aports directory travels as incus-backup-VERSION-aports.tar.gz.
+          path: |
+            dist/
+            !dist/aports/
+          if-no-files-found: error
+          retention-days: 30
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment: signing
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          name: dist
+          path: dist
+      - name: Install minisign (pinned + checksum-verified, as in alpine-zfsboot)
+        run: |
+          set -e
+          curl -fsSL -o /tmp/minisign.tar.gz \
+            "https://github.com/jedisct1/minisign/releases/download/0.12/minisign-0.12-linux.tar.gz"
+          echo "9a599b48ba6eb7b1e80f12f36b94ceca7c00b7a5173c95c3efc88d9822957e73  /tmp/minisign.tar.gz" | sha256sum -c -
+          tar -xzf /tmp/minisign.tar.gz -C /tmp
+          sudo install -m 0755 /tmp/minisign-linux/x86_64/minisign /usr/local/bin/minisign
+      - name: Sign every asset (SHA256SUMS excepted) and verify
+        env:
+          INCUS_BACKUP_MINISIGN_KEY: ${{ secrets.INCUS_BACKUP_MINISIGN_KEY }}
+          PUB: ${{ vars.INCUS_BACKUP_MINISIGN_PUBLIC_KEY }}
+        run: |
+          set -e
+          cd dist
+          sha256sum -c --quiet SHA256SUMS
+          if [ -z "$INCUS_BACKUP_MINISIGN_KEY" ] && [ -z "$PUB" ]; then
+            echo "::warning::no signing key configured (environment secret INCUS_BACKUP_MINISIGN_KEY and variable INCUS_BACKUP_MINISIGN_PUBLIC_KEY are both unset): publishing UNSIGNED"
+            exit 0
+          fi
+          [ -n "$INCUS_BACKUP_MINISIGN_KEY" ] || { echo "::error::INCUS_BACKUP_MINISIGN_PUBLIC_KEY is set but the signing secret is empty: refusing an unsigned release"; exit 1; }
+          [ -n "$PUB" ] || { echo "::error::INCUS_BACKUP_MINISIGN_PUBLIC_KEY is empty: the signatures cannot be verified"; exit 1; }
+          keyfile="$(mktemp)"
+          trap 'rm -f "$keyfile"' EXIT
+          printf '%s\n' "$INCUS_BACKUP_MINISIGN_KEY" > "$keyfile"
+          for f in *; do
+            [ -f "$f" ] || continue
+            case "$f" in SHA256SUMS|*.minisig) continue ;; esac
+            minisign -S -s "$keyfile" -x "$f.minisig" -t "incus-backup ${GITHUB_REF_NAME#v} - $f" -m "$f" </dev/null
+            minisign -V -q -P "$PUB" -m "$f" -x "$f.minisig"
+          done
+          ls -l
+      - uses: softprops/action-gh-release@v3
+        with:
+          name: incus-backup ${{ github.ref_name }}
+          body_path: dist/RELEASE_NOTES.md
+          # 1.2.3_rc1 and friends (apk pre-release syntax) are GitHub pre-releases.
+          prerelease: ${{ contains(github.ref_name, '_') }}
+          files: |
+            dist/incus-backup-*
+            dist/SHA256SUMS
+            dist/BUILDINFO*
+            dist/RELEASE_NOTES.md*
+          fail_on_unmatched_files: true

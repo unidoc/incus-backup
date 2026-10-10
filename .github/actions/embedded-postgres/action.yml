@@ -1,0 +1,31 @@
+name: Embedded PostgreSQL binaries
+description: >
+  Fills INCUS_BACKUP_PG_CACHE with the PostgreSQL 16 binaries that embedded-postgres downloads.
+  internal/demo (ibdemo) and the e2e backend (web/e2e/backend.ts) always run that PostgreSQL;
+  they have no external-URL mode (internal/testdb does: INCUS_BACKUP_TEST_DATABASE_URL). Cached per
+  embedded-postgres version; on a miss one testdb package's TestMain downloads it. Needs
+  actions/setup-go and a checkout first.
+runs:
+  using: composite
+  steps:
+    - id: ver
+      shell: bash
+      run: |
+        v=$(go list -m -f '{{.Version}}' github.com/fergusstrange/embedded-postgres)
+        echo "version=$v" >> "$GITHUB_OUTPUT"
+        echo "INCUS_BACKUP_PG_CACHE=$HOME/.cache/incus-backup-embedded-postgres" >> "$GITHUB_ENV"
+    - id: cache
+      uses: actions/cache@v6
+      with:
+        path: ~/.cache/incus-backup-embedded-postgres
+        key: embedded-pg16-${{ runner.os }}-${{ runner.arch }}-${{ steps.ver.outputs.version }}
+    - if: steps.cache.outputs.cache-hit != 'true'
+      shell: bash
+      run: |
+        # testdb.Main starts (and so downloads) embedded PostgreSQL when no URL is set, even
+        # when -run matches no test.
+        env -u INCUS_BACKUP_TEST_DATABASE_URL go test -count=1 -run '^$' ./internal/server/auth
+    - shell: bash
+      run: |
+        test -x "$INCUS_BACKUP_PG_CACHE/bin/postgres" || { echo "::error::no PostgreSQL binaries in $INCUS_BACKUP_PG_CACHE"; exit 1; }
+        "$INCUS_BACKUP_PG_CACHE/bin/postgres" --version

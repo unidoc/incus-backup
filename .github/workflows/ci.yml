@@ -1,0 +1,356 @@
+name: CI
+
+# Every check that gates a merge and a release. Branch protection targets the `ci-ok` job.
+# release.yml calls this workflow (workflow_call), so a tag is only released after the same jobs pass.
+# The same checks run locally with `just ci` (scripts/ci.sh); docs/development.md explains the services.
+#
+# Test services (the tests FAIL, never skip, without them):
+#   * PostgreSQL 16: a service container, INCUS_BACKUP_TEST_DATABASE_URL (internal/testdb).
+#   * S3: MinIO built from source (dl.min.io no longer serves binaries) by the `minio` job and cached
+#     (.github/actions/minio). The `go` job runs one shared MinIO and sets INCUS_BACKUP_TEST_S3_*;
+#     the `race` job lets internal/s3test start the binary itself (INCUS_BACKUP_TEST_MINIO). Both
+#     wirings of internal/s3test are exercised.
+#   * internal/demo and the e2e backend always run embedded PostgreSQL (no URL mode): its binaries
+#     are cached by .github/actions/embedded-postgres.
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+concurrency:
+  # A fixed prefix: when release.yml calls this workflow, github.workflow is the caller's name.
+  group: ci-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+env:
+  GOTOOLCHAIN: local # exactly the Go of go.mod (setup-go), never a silent toolchain download
+
+jobs:
+  minio:
+    name: MinIO test binary
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache: false
+      - uses: ./.github/actions/minio
+
+  go:
+    name: Go (fmt, vet, build, test)
+    needs: minio
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      INCUS_BACKUP_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: ./.github/actions/webui-dist
+      - uses: ./.github/actions/minio
+      - uses: ./.github/actions/embedded-postgres
+      # The PostgreSQL service keeps its default settings on purpose: a full local run against one
+      # shared server peaked at about 15 connections (default limit 100), and synchronous_commit=off
+      # changes the plans TestPerfIndexesUsed (internal/server/service) asserts.
+      - name: Start a shared MinIO (internal/s3test uses INCUS_BACKUP_TEST_S3_*)
+        run: |
+          mkdir -p "$RUNNER_TEMP/minio-data"
+          MINIO_ROOT_USER=ciaccess MINIO_ROOT_PASSWORD=ci-secret-12345 MINIO_BROWSER=off \
+            nohup "$INCUS_BACKUP_TEST_MINIO" server "$RUNNER_TEMP/minio-data" \
+            --address 127.0.0.1:9000 --console-address 127.0.0.1:9001 --quiet > "$RUNNER_TEMP/minio.log" 2>&1 &
+          for _ in $(seq 100); do curl -fsS -o /dev/null http://127.0.0.1:9000/minio/health/live && break; sleep 0.3; done
+          curl -fsS -o /dev/null http://127.0.0.1:9000/minio/health/live
+          {
+            echo "INCUS_BACKUP_TEST_S3_ENDPOINT=127.0.0.1:9000"
+            echo "INCUS_BACKUP_TEST_S3_ACCESS_KEY=ciaccess"
+            echo "INCUS_BACKUP_TEST_S3_SECRET_KEY=ci-secret-12345"
+          } >> "$GITHUB_ENV"
+      - name: gofmt
+        run: bash scripts/ci.sh fmt
+      - name: go vet
+        run: bash scripts/ci.sh vet
+      - name: go build (linux/amd64, linux/arm64, js/wasm; CGO_ENABLED=0)
+        run: bash scripts/ci.sh build
+      - name: go test
+        run: bash scripts/ci.sh test
+      - name: MinIO log
+        if: failure()
+        run: tail -n 100 "$RUNNER_TEMP/minio.log" || true
+
+  race:
+    name: Go race detector (concurrency-heavy packages)
+    needs: minio
+    runs-on: ubuntu-latest
+    timeout-minutes: 50
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      INCUS_BACKUP_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: ./.github/actions/webui-dist
+      - uses: ./.github/actions/minio
+      - name: go test -race -p 1
+        run: bash scripts/ci.sh race
+
+  web:
+    name: Web UI (Node ${{ matrix.node }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    strategy:
+      fail-fast: false
+      matrix:
+        node: [22, 24] # web/package.json engines: node >= 22
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v7
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            web-crypto/package-lock.json
+      - name: web-crypto build, npm ci, type checks, vitest, vite build, server with the UI embedded
+        run: bash scripts/ci.sh web
+
+  e2e:
+    name: End-to-end (Playwright, real server + demo; web-crypto in Chromium)
+    needs: minio
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            web-crypto/package-lock.json
+      - uses: ./.github/actions/minio
+      - uses: ./.github/actions/embedded-postgres
+      - name: Build web-crypto and the UI
+        working-directory: web
+        run: |
+          npm run crypto
+          npm ci --no-audit --no-fund
+          npm run build
+      - name: Playwright Chromium (and its system libraries)
+        working-directory: web
+        run: npx playwright install --with-deps chromium
+      - name: Build the demo server
+        run: |
+          CGO_ENABLED=0 go build -o "$RUNNER_TEMP/ibdemo" ./cmd/ibdemo
+          echo "IB_DEMO_BIN=$RUNNER_TEMP/ibdemo" >> "$GITHUB_ENV"
+      - name: web-crypto tests (Node + headless Chromium, fixture from the real Go engine)
+        working-directory: web-crypto
+        run: npm test
+      - name: Playwright (projects real + demo)
+        working-directory: web
+        env:
+          IB_E2E_SKIP_BUILD: "1" # the UI was built above; global setup still builds the server with it
+        run: |
+          # Without the binary the config silently drops the demo project.
+          test -x "$IB_DEMO_BIN"
+          npx playwright test
+      - name: Upload traces, screenshots and server logs
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: e2e-failure
+          path: |
+            web/test-results/
+            web/e2e/screenshots/
+            web/e2e/.state/*.log
+            web/e2e/.state/**/*.log
+          include-hidden-files: true
+          if-no-files-found: ignore
+          retention-days: 14
+
+  openapi-docs:
+    name: docs/api.md route table is current
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      # internal/server/mgmt's TestMain sets up PostgreSQL; the doc test itself needs no S3.
+      INCUS_BACKUP_TEST_DATABASE_URL: postgres://postgres:postgres@127.0.0.1:5432/postgres?sslmode=disable
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: ./.github/actions/webui-dist
+      - name: Regenerate the route table
+        run: bash scripts/ci.sh apidoc
+      - name: No difference to the committed docs/api.md
+        if: always()
+        run: git diff --exit-code docs/api.md
+
+  packaging:
+    name: Packaging (shellcheck, release build, abuild, smoke install; x86_64)
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_PASSWORD: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            web/package-lock.json
+            web-crypto/package-lock.json
+      - name: shellcheck
+        run: |
+          shellcheck --version | head -n 2
+          shellcheck -x -P SCRIPTDIR -S warning scripts/*.sh scripts/gates/*.sh web-crypto/scripts/*.sh
+          # OpenRC scripts, install scripts and the APKBUILD are sourced by openrc-run/abuild/apk:
+          # their variables are read by the caller (SC2034/SC2154), and busybox ash has `local` (SC3043).
+          shellcheck -s sh -S warning -e SC2034,SC2154,SC3043 packaging/APKBUILD packaging/*.initd \
+            packaging/*.confd packaging/*.pre-* packaging/*.post-*
+      - name: Syntax (bash -n / sh -n)
+        run: |
+          for f in scripts/*.sh scripts/gates/*.sh; do bash -n "$f"; done
+          for f in web-crypto/scripts/*.sh packaging/APKBUILD packaging/*.confd packaging/*.pre-* packaging/*.post-*; do sh -n "$f"; done
+          for f in packaging/*.initd; do sed '1s|^#!.*|#!/bin/sh|' "$f" | sh -n; done
+      - name: Release build (amd64 only; the arm64 build runs in release.yml)
+        env:
+          ARCHES: amd64
+        run: bash scripts/release.sh "$(tr -d '[:space:]' < version.txt)"
+      - uses: actions/cache@v6
+        with:
+          path: ~/.cache/incus-backup-alpine
+          key: alpine-3.24-${{ runner.arch }}-${{ hashFiles('packaging/APKBUILD', 'go.mod', 'scripts/release-lib.sh') }}
+      - name: Alpine packages with the real abuild (throwaway key, proot)
+        run: bash scripts/release-apk.sh dist
+      - name: Smoke install into a fresh Alpine root (with a real PostgreSQL)
+        env:
+          PG_ID: ${{ job.services.postgres.id }}
+        run: |
+          docker exec "$PG_ID" psql -U postgres -qc 'CREATE DATABASE smoke'
+          SMOKE_PG_URL='postgres://postgres:postgres@127.0.0.1:5432/smoke?sslmode=disable' bash scripts/smoke-install.sh dist
+      - name: Upload the abuild log
+        if: failure()
+        uses: actions/upload-artifact@v7
+        with:
+          name: abuild-log
+          path: dist/apk/abuild.log
+          if-no-files-found: ignore
+          retention-days: 14
+
+  vendor:
+    name: go.mod tidy, vendored offline build
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - uses: ./.github/actions/webui-dist
+      - name: go mod tidy -diff, go mod verify, go mod vendor + GOPROXY=off build
+        run: bash scripts/ci.sh vendor
+
+  ci-ok:
+    name: ci-ok
+    if: always()
+    needs: [minio, go, race, web, e2e, openapi-docs, packaging, vendor]
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every job succeeded
+        env:
+          RESULTS: ${{ toJSON(needs.*.result) }}
+        run: |
+          echo "$RESULTS"
+          # A skipped or cancelled job is a failure here: branch protection must not pass on it.
+          echo "$RESULTS" | jq -e 'length > 0 and all(. == "success")' >/dev/null
