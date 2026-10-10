@@ -1,0 +1,10 @@
+/bin/
+*.test
+/temp/
+.DS_Store
+/dist/
+# built management UI (output of `just web`); only .keep is tracked so go:embed compiles
+/internal/server/webui/dist/*
+!/internal/server/webui/dist/.keep
+# e2e screenshots are generated output (light/dark x desktop/phone), not source
+/web/e2e/screenshots/
