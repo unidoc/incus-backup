@@ -41,7 +41,11 @@ export async function functional(lib, core, expected) {
   const fx = await (await fetch('/fixture/fixture.json')).json();
   const cat = fx.snapshots.find((s) => s.label === 'catalog');
   const out = {};
-  out.badKey = await errName(lib.openKey(fx.recoveryKey.slice(0, -1) + (fx.recoveryKey.endsWith('A') ? 'B' : 'A'), { core }));
+  // Not the last character: its low bits are unused, so changing it can decode to the same key (no error).
+  const typo = fx.recoveryKey.split('');
+  const at = typo.length - 2;
+  typo[at] = typo[at] === 'A' ? 'B' : 'A';
+  out.badKey = await errName(lib.openKey(typo.join(''), { core }));
   const key = await lib.openKey(fx.recoveryKey, { core });
   out.domainId = key.domainId;
   const fetcher = new lib.HttpFetcher('');

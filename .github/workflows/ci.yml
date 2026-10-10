@@ -104,10 +104,14 @@ jobs:
         run: tail -n 100 "$RUNNER_TEMP/minio.log" || true
 
   race:
-    name: Go race detector (concurrency-heavy packages)
+    name: Go race detector (${{ matrix.shard }})
     needs: minio
     runs-on: ubuntu-latest
-    timeout-minutes: 50
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [a, b, c] # the concurrency-heavy packages in three parallel parts (scripts/ci.sh)
     services:
       postgres:
         image: postgres:16
@@ -132,7 +136,9 @@ jobs:
           cache-dependency-path: go.sum
       - uses: ./.github/actions/webui-dist
       - uses: ./.github/actions/minio
-      - name: go test -race -p 1
+      - name: go test -race -p 1 (shard ${{ matrix.shard }})
+        env:
+          RACE_SHARD: ${{ matrix.shard }}
         run: bash scripts/ci.sh race
 
   web:

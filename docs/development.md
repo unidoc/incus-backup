@@ -68,7 +68,7 @@ Other test recipes:
 | `vet` | `go vet ./...` |
 | `build` | `go build ./...` for linux/amd64 and linux/arm64 with `CGO_ENABLED=0` (as the release), and `cmd/ibwasm` for js/wasm |
 | `test` | `go test ./...` (`CGO_ENABLED=0`, 30 min timeout) |
-| `race` | `go test -race -p 1` on the concurrency-heavy packages (list in `scripts/ci.sh`) |
+| `race` | `go test -race -p 1` on the concurrency-heavy packages (list in `scripts/ci.sh`); in CI three parallel shards `a`, `b`, `c` (`RACE_SHARD`) |
 | `web` | `npm run crypto` (web-crypto: Go -> WebAssembly + TypeScript), web-crypto type check, `npm ci`, `npm run typecheck`, `npm test` (vitest), `npm run build`, then `go build ./cmd/incus-backup-server` with that UI embedded and a check that it is |
 | `apidoc` | `IB_WRITE_API_DOC=1 go test ./internal/server/mgmt -run APIDoc`; fails if `docs/api.md` changed (the regenerated file is left in place to commit) |
 | `vendor` | `go mod tidy -diff`, `go mod verify`, then `go mod vendor` and a `GOPROXY=off -mod=vendor` build in a scratch copy (the release tarball relies on `vendor/`) |
