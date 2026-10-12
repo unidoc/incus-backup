@@ -188,13 +188,13 @@ var apiRoutes = map[string]apiRoute{
 	"GET /api/v1/api-tokens":             {Summary: "Every user's API tokens (never the secret)", Tag: "Users", Resp: []auth.AdminTokenInfo{}},
 	"DELETE /api/v1/api-tokens/{id}":     {Summary: "Revoke any API token", Tag: "Users"},
 	"POST /api/v1/me/password":           {Summary: "Change my password", Tag: "Me", Bind: bindSelf, Body: docOwnPassword{}},
-	"POST /api/v1/me/totp":               {Summary: "Begin two-factor enrolment", Tag: "Me", Bind: bindSelf, Resp: auth.TOTPEnrolment{}},
-	"POST /api/v1/me/totp/confirm":       {Summary: "Confirm two-factor enrolment; returns recovery codes once", Tag: "Me", Bind: bindSelf, Body: docCode{}, Resp: docRecovery{}},
+	"POST /api/v1/me/totp":               {Summary: "Begin two-factor enrolment (password needed when the sign-in is older than 10 minutes)", Tag: "Me", Bind: bindSelf, Body: docPasswordOpt{}, Resp: auth.TOTPEnrolment{}},
+	"POST /api/v1/me/totp/confirm":       {Summary: "Confirm two-factor enrolment; returns recovery codes once (password needed when the sign-in is older than 10 minutes)", Tag: "Me", Bind: bindSelf, Body: docCodeReauth{}, Resp: docRecovery{}},
 	"DELETE /api/v1/me/totp":             {Summary: "Remove my two-factor enrolment (needs the password)", Tag: "Me", Bind: bindSelf, Body: docPasswordOnly{}},
 	"GET /api/v1/me/sessions":            {Summary: "My sessions", Tag: "Me", Bind: bindSelf, Resp: []auth.SessionInfo{}},
 	"DELETE /api/v1/me/sessions/{id}":    {Summary: "End one of my sessions", Tag: "Me", Bind: bindSelf},
 	"GET /api/v1/me/tokens":              {Summary: "My API tokens", Tag: "Me", Bind: bindSelf, Resp: []auth.TokenInfo{}},
-	"POST /api/v1/me/tokens":             {Summary: "Create an API token (optionally restricted to repositories); the secret is shown once", Tag: "Me", Bind: bindSelf, Body: docMeToken{}, Resp: docMeTokenResp{}, Status: 201},
+	"POST /api/v1/me/tokens":             {Summary: "Create an API token (optionally restricted to repositories; 90 days unless ttl_hours, at most 365 days; password needed when the sign-in is older than 10 minutes; not for single sign-on accounts); the secret is shown once", Tag: "Me", Bind: bindSelf, Body: docMeToken{}, Resp: docMeTokenResp{}, Status: 201},
 	"DELETE /api/v1/me/tokens/{id}":      {Summary: "Revoke one of my API tokens", Tag: "Me", Bind: bindSelf},
 
 	// ---- jobs and restore tests
@@ -366,6 +366,10 @@ type docOwnPassword struct {
 type docCode struct {
 	Code string `json:"code"`
 }
+type docCodeReauth struct {
+	Code     string `json:"code"`
+	Password string `json:"password,omitempty" doc:"needed when the sign-in is older than 10 minutes"`
+}
 type docPasswordOnly struct {
 	Password string `json:"password"`
 }
@@ -376,8 +380,9 @@ type docRecovery struct {
 type docMeToken struct {
 	Name         string    `json:"name"`
 	Role         auth.Role `json:"role,omitempty"`
-	TTLHours     float64   `json:"ttl_hours,omitempty"`
+	TTLHours     float64   `json:"ttl_hours,omitempty" doc:"0 or missing = 90 days; at most 365 days (8760 hours)"`
 	Repositories []string  `json:"repositories,omitempty" doc:"restrict the token to these repositories (no global rights)"`
+	Password     string    `json:"password,omitempty" doc:"needed when the sign-in is older than 10 minutes"`
 }
 type docMeTokenResp struct {
 	Token string         `json:"token"`

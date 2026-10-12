@@ -103,8 +103,8 @@ export function useResource<T>(key: () => string, fetcher: (signal: AbortSignal)
     debounce = setTimeout(() => { debounce = null; void load(true) }, 250)
   }
   const offs: Array<() => void> = []
-  for (const t of o.refreshOn ?? []) offs.push(bus.on(t, soon))
-  offs.push(bus.on('resync', soon))
+  for (const t of o.refreshOn ?? []) offs.push(bus.onVisible(t, soon)) // not while hidden: a refetch would renew the session
+  offs.push(bus.onVisible('resync', soon))
   const pollTimer = o.poll ? setInterval(() => { if (document.visibilityState === 'visible') void load(true) }, o.poll) : null
 
   const onInvalidate = () => void load(true)

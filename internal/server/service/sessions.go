@@ -272,6 +272,17 @@ func (s *Service) SessionAbort(ctx context.Context, h *Host, sid string) error {
 	if err != nil {
 		return err
 	}
+	// While SessionCommit runs, an abort (the client gave up waiting) must not drop the session's pins
+	// under it, as ReapSessions does not either: the commit finishes and ends the session itself.
+	ss.mu.Lock()
+	committing := ss.committing
+	if !committing {
+		ss.finished = true // closes the window to a commit that starts now (it finds the session finished)
+	}
+	ss.mu.Unlock()
+	if committing {
+		return fmt.Errorf("%w: the snapshot is being committed", ErrConflict)
+	}
 	s.endSession(ctx, ss, "aborted")
 	return nil
 }
@@ -337,7 +348,7 @@ var _ = pgx.ErrNoRows
 
 // ---- synchronisation pins ------------------------------------------------------
 
-// syncPin is one long-lived pin-only datastore session per repository: chunks received by
+// syncPin is one long-lived pin-only datastore session per repository and transfer: chunks received by
 // server-to-server synchronisation are pinned while the transfer is active, so a sync that
 // runs for many hours cannot lose chunks to a concurrent garbage collection before the
 // snapshots that reference them are committed.
@@ -346,29 +357,45 @@ type syncPin struct {
 	expires time.Time
 }
 
-func (s *Service) syncPinFor(repo *Repo) (*datastore.Session, error) {
+type syncTransferKey struct{}
+
+// WithSyncTransfer names the synchronisation transfer (one job run of one peer) the calls made with the
+// returned context belong to. Each transfer has its own chunk pin; calls without one share the pin "".
+func WithSyncTransfer(ctx context.Context, id string) context.Context {
+	return context.WithValue(ctx, syncTransferKey{}, id)
+}
+
+func syncPinKey(ctx context.Context, repoID string) string {
+	id, _ := ctx.Value(syncTransferKey{}).(string)
+	return repoID + "\x00" + id
+}
+
+func (s *Service) syncPinFor(ctx context.Context, repo *Repo) (*datastore.Session, error) {
 	store, err := s.openStore(context.Background(), repo)
 	if err != nil {
 		return nil, err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	p := s.syncPins[repo.ID]
+	key := syncPinKey(ctx, repo.ID)
+	p := s.syncPins[key]
 	if p == nil {
 		p = &syncPin{ds: store.BeginPinSession()}
-		s.syncPins[repo.ID] = p
+		s.syncPins[key] = p
 	}
 	// a sync moves one snapshot at a time and may be rate limited: keep the pin for two hours of silence
 	p.expires = s.Now().Add(2 * time.Hour)
 	return p.ds, nil
 }
 
-// releaseSyncPin ends the repository's sync pin (called when a synchronised snapshot has committed: from
-// then on its chunks are protected by the snapshot itself, and the pin set must not grow for ever).
-func (s *Service) releaseSyncPin(repoID string) {
+// releaseSyncPin ends the sync pin of the transfer ctx belongs to (called when a synchronised snapshot has
+// committed: from then on its chunks are protected by the snapshot itself, and the pin set must not grow
+// for ever). Other transfers into the same repository keep their pins.
+func (s *Service) releaseSyncPin(ctx context.Context, repoID string) {
+	key := syncPinKey(ctx, repoID)
 	s.mu.Lock()
-	p := s.syncPins[repoID]
-	delete(s.syncPins, repoID)
+	p := s.syncPins[key]
+	delete(s.syncPins, key)
 	s.mu.Unlock()
 	if p != nil {
 		p.ds.Close()

@@ -29,6 +29,7 @@ import iFileKey from 'lucide-static/icons/file-key.svg?raw'
 import iRepeat from 'lucide-static/icons/repeat.svg?raw'
 import iCircleX from 'lucide-static/icons/circle-x.svg?raw'
 import iHourglass from 'lucide-static/icons/hourglass.svg?raw'
+import { svgInner } from '../icons/svgInner'
 
 const raw: Record<string, string> = {
   'mail': iMail,
@@ -63,4 +64,4 @@ const raw: Record<string, string> = {
 }
 export type CfgIconName = 'mail' | 'webhook' | 'bell-ring' | 'message-square' | 'bell-off' | 'check-check' | 'undo-2' | 'zap' | 'siren' | 'user-plus' | 'user-x' | 'key' | 'shield-off' | 'rotate-ccw' | 'list-checks' | 'globe' | 'timer' | 'moon-star' | 'plug' | 'flask-conical' | 'radio' | 'inbox' | 'user-cog' | 'shield' | 'calendar' | 'file-key' | 'repeat' | 'circle-x' | 'hourglass'
 /** Inner SVG markup (the <svg> wrapper stripped). */
-export const cfgIcons: Record<string, string> = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, v.replace(/<!--[\s\S]*?-->/g, '').replace(/^[\s\S]*?<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '')]))
+export const cfgIcons: Record<string, string> = Object.fromEntries(Object.entries(raw).map(([k, v]) => [k, svgInner(v)]))

@@ -9,20 +9,48 @@ People sign in to the web console and the management API (`/api/v1`) in one of t
 | single sign-on | an OpenID Connect identity provider (Keycloak, Authentik, Google, ...) | the identity provider's business |
 
 Backup hosts never use any of this: they authenticate with mutual TLS (`docs/certificates.md`).
-API tokens (`Authorization: Bearer ibt_…`) are unchanged: they belong to a user and are not affected by
-the sign-in policy below.
+API tokens (`Authorization: Bearer ibt_…`) belong to a user and are not affected by the sign-in policy
+below. See "API tokens" below for how they are created and how long they live.
 
 **One session model.** Every method ends in the same place: `auth.Store.openSession` creates the row in
 `user_sessions`, the same `ib_session` cookie (HttpOnly, Secure, SameSite=Strict) and the same CSRF token
 as a password sign-in, with the same lifetime (30 minutes idle, 12 hours at most). Roles, repository scopes
 (`docs/permissions.md`), the audit log and the lock-out after failed attempts are the same for every
-method. `GET /session` says how a session was opened (`method`: `password`, `passkey` or `oidc`).
+method. The lock-out looks the same for every name: an unknown name or a single sign-on account answers 401 five times and then 429 like a real account (counted in memory, so a restart forgets it). `GET /session` says how a session was opened (`method`: `password`, `passkey` or `oidc`).
 
 Code: `internal/server/auth/{auth,webauthn,oidc,policy}.go`, routes in
 `internal/server/mgmt/routes_authn.go`, schema in section 14 of
 `migrations/20261008000000_initial_schema.sql`, web pages `web/src/views/auth/Login.vue`,
 `web/src/views/auth/Enrol2FA.vue`, `web/src/views/settings/Authentication.vue`,
 `web/src/components/authn/*`.
+
+### What counts as activity (the 30-minute idle timeout)
+
+A session's idle clock moves only when a person's request reaches the server (`last_seen`, written at
+most once a minute). The console's open event stream (`GET /events`) checks the session every 20 seconds
+so a revoked or expired session ends the stream, but that check does NOT renew it (`Store.Recheck`).
+The console also pauses its event-driven refetches while its tab is hidden (`document.visibilityState`)
+and runs one catch-up refetch when the tab becomes visible again; its timed polls already paused while
+hidden. So a **visible** tab that keeps polling or refetching stays signed in (a console on a wall
+screen is meant to), and a **hidden** or forgotten tab reaches the 30-minute idle timeout. The 12-hour
+absolute limit applies to both.
+
+## API tokens
+
+- Creating one (`POST /me/tokens`) and starting or confirming two-factor enrolment (`POST /me/totp`,
+  `/me/totp/confirm`) need a sign-in within the last **10 minutes** or the password again (`password`
+  in the body; the answer is 400 `password_required` otherwise, a wrong password counts like a failed
+  sign-in), the same as adding or removing a passkey. A stolen session cookie alone therefore cannot mint
+  a key that outlives the cookie.
+- A token always expires. `ttl_hours` missing or 0 means **90 days**; the longest is **365 days**
+  (more is refused with 400).
+- A user who signs in only through single sign-on (no local password) gets **no API tokens** (400), for
+  the same reason as for passkeys and TOTP: a local key would bypass the identity provider and keep the
+  last role it mapped, because the token's role is capped by `users.role`, which only the next
+  single sign-on sign-in rewrites. Such users who need automation use a token of a local account.
+- Tokens outlive a password change or reset (that ends sessions, not tokens): revoke them from
+  Profile → API tokens, or delete the user. Revoking tokens on an administrator's password reset is
+  not done automatically.
 
 ## Passkeys and security keys (WebAuthn)
 
@@ -62,7 +90,7 @@ Keys can be renamed (`PATCH /me/webauthn/{id}`) and removed (`DELETE /me/webauth
 for each key whether it is a synced passkey (backup eligible), when it was last used, and whether it is
 **blocked** (see clone detection).
 
-Users who sign in only through single sign-on (no local password) cannot register keys or TOTP: their
+Users who sign in only through single sign-on (no local password) cannot register keys, TOTP or API tokens: their
 second factor is the identity provider's (and a local key would bypass the provider and keep the last
 role it mapped).
 
@@ -240,7 +268,7 @@ sign-in on the web listener (`PUT /auth/settings {"local_login": false}`; passke
 sign-in). The server refuses unless an enabled administrator is linked to an enabled provider and has
 signed in through it (so somebody can still administer the server), and while it is off it also refuses
 to disable or delete the last such provider or unlink the last such administrator. Sessions already open
-continue; API tokens keep working; the unix-socket admin API is unaffected. Demoting, disabling or deleting
+continue; API tokens (of accounts with a local password) keep working; the unix-socket admin API is unaffected. Demoting, disabling or deleting
 that administrator through the user editor is not guarded; `incus-backup-server user local-login on` is the
 way back.
 

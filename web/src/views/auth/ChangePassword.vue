@@ -11,6 +11,7 @@ import { api } from '@/api/endpoints'
 import { refreshUser, session, logout } from '@/stores/session'
 import { passwordStrength } from '@/lib/password'
 import { errorText, toast } from '@/stores/toast'
+import { safeNext } from '@/lib/safeNext'
 
 const route = useRoute()
 const router = useRouter()
@@ -29,7 +30,7 @@ async function submit() {
     await api.me.changePassword({ current: current.value, new: pw.value })
     await refreshUser()
     toast.success('Password changed', 'Your other sessions were signed out.')
-    const next = typeof route.query.next === 'string' && route.query.next.startsWith('/') ? route.query.next : '/'
+    const next = safeNext(route.query.next)
     await router.replace(next)
   } catch (e) {
     error.value = errorText(e)

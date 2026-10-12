@@ -59,6 +59,12 @@ func (e *Engine) Verify(ctx context.Context, t *Target, last int) (*VerifyReport
 func (e *Engine) verifyOne(ctx context.Context, t *Target, o api.RepoObject, s api.SnapshotRef, seen map[format.ID]bool, rep *VerifyReport) {
 	label := fmt.Sprintf("%s/%s@%s", o.Project, o.Name, s.SnapshotID)
 	prob := func(f string, a ...any) { rep.Problems = append(rep.Problems, label+": "+fmt.Sprintf(f, a...)) }
+	// the group id is keyed: recompute it from the labels as Locate does, so a server that lies about
+	// the labels (or the group a snapshot sits in) is noticed instead of trusted
+	if g := t.Keys.GroupID(o.Project, o.Kind, o.Name); g != o.GroupID {
+		prob("the server's group id does not match the object's project, kind and name")
+		return
+	}
 	ib, err := t.Client.Index(ctx, o.GroupID, s.SnapshotID)
 	if err != nil {
 		prob("index: %v", err)

@@ -2,8 +2,10 @@ package archive
 
 import (
 	"bytes"
+	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"testing"
 	"time"
@@ -190,5 +192,98 @@ func TestUntrustedDirectoryEntryCannotActThroughAnExistingSymlink(t *testing.T) 
 	_ = tw.Close()
 	if err := Extract(&c, dest, ExtractOptions{Untrusted: true}); err == nil {
 		t.Fatal("an entry for the destination itself was accepted")
+	}
+}
+
+// paxRec encodes one PAX record ("<len> k=v\n").
+func paxRec(k, v string) string {
+	s := " " + k + "=" + v + "\n"
+	n := len(s) + 1
+	for {
+		t := fmt.Sprintf("%d%s", n, s)
+		if len(t) == n {
+			return t
+		}
+		n = len(t)
+	}
+}
+
+func tarBlock(name string, typ byte, size int64) []byte {
+	b := make([]byte, 512)
+	copy(b, name)
+	copy(b[100:], "0000644\x00")
+	copy(b[108:], "0000000\x00")
+	copy(b[116:], "0000000\x00")
+	copy(b[124:], fmt.Sprintf("%011o\x00", size))
+	copy(b[136:], "00000000000\x00")
+	b[156] = typ
+	copy(b[257:], "ustar\x0000")
+	for i := 148; i < 156; i++ {
+		b[i] = ' '
+	}
+	var sum int
+	for _, c := range b {
+		sum += int(c)
+	}
+	copy(b[148:], fmt.Sprintf("%06o\x00 ", sum))
+	return b
+}
+
+func padBlock(b []byte) []byte {
+	for len(b)%512 != 0 {
+		b = append(b, 0)
+	}
+	return b
+}
+
+// sparseTar is a few KiB tar holding one PAX sparse 1.0 entry that archive/tar expands to
+// realSize bytes of zeros (review finding F10).
+func sparseTar(realSize int64) []byte {
+	pax := paxRec("GNU.sparse.major", "1") + paxRec("GNU.sparse.minor", "0") + paxRec("GNU.sparse.name", "big") + paxRec("GNU.sparse.realsize", fmt.Sprint(realSize))
+	var out []byte
+	out = append(out, tarBlock("PaxHeaders/big", 'x', int64(len(pax)))...)
+	out = append(out, padBlock([]byte(pax))...)
+	data := padBlock([]byte("1\n0\n1\n"))
+	data = append(data, 'X')
+	out = append(out, tarBlock("GNUSparseFile.0/big", '0', int64(len(data)))...)
+	out = append(out, padBlock(data)...)
+	return append(out, make([]byte, 1024)...)
+}
+
+func TestUntrustedSparseEntryIsRefusedBeforeExtracting(t *testing.T) {
+	raw := sparseTar(64 << 30)
+	// premise: the standard reader really reports a 64 GiB regular file for these few KiB
+	h, err := tar.NewReader(bytes.NewReader(raw)).Next()
+	if err != nil || h.Typeflag != tar.TypeReg || h.Size != 64<<30 {
+		t.Fatalf("premise: header %+v err %v", h, err)
+	}
+	dest := t.TempDir()
+	rep := &ExtractReport{}
+	err = Extract(bytes.NewReader(raw), dest, ExtractOptions{Untrusted: true, MaxBytes: 1 << 20, Report: rep})
+	if err == nil || !strings.Contains(err.Error(), "exceeds the limit") {
+		t.Fatalf("a 64 GiB sparse entry must be refused, got %v", err)
+	}
+	if _, serr := os.Lstat(filepath.Join(dest, "big")); serr == nil {
+		t.Fatal("the oversized entry must be refused BEFORE a file is created")
+	}
+	if rep.Bytes != 0 {
+		t.Fatalf("bytes written: %d", rep.Bytes)
+	}
+}
+
+func TestUntrustedEntryCountIsCapped(t *testing.T) {
+	var b bytes.Buffer
+	tw := tar.NewWriter(&b)
+	for i := 0; i < 10; i++ {
+		if err := tw.WriteHeader(&tar.Header{Name: fmt.Sprintf("d%d", i), Typeflag: tar.TypeDir, Mode: 0o755}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tw.Close()
+	if err := Extract(bytes.NewReader(b.Bytes()), t.TempDir(), ExtractOptions{Untrusted: true, MaxEntries: 5}); err == nil || !strings.Contains(err.Error(), "entries") {
+		t.Fatalf("10 entries with a cap of 5 must be refused, got %v", err)
+	}
+	if err := Extract(bytes.NewReader(b.Bytes()), t.TempDir(), ExtractOptions{Untrusted: true, MaxEntries: 10}); err != nil {
+		t.Fatalf("exactly the cap must pass: %v", err)
 	}
 }

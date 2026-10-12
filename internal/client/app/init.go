@@ -70,6 +70,7 @@ func Init(ctx context.Context, o InitOptions) (*InitResult, error) {
 		return nil, fmt.Errorf("a server called %q is already configured", name)
 	}
 	res := &InitResult{Server: name}
+	wroteKey := false // this run created the key file (new or recovered from escrow)
 
 	var keys *format.Keys
 	var master []byte
@@ -114,6 +115,7 @@ func Init(ctx context.Context, o InitOptions) (*InitResult, error) {
 		if err := writeNew(cfg.KeyFile, b); err != nil {
 			return nil, err
 		}
+		wroteKey = true
 		keys, _ = format.DeriveKeys(m)
 		master, recoveredEn = m, en
 	default:
@@ -143,6 +145,7 @@ func Init(ctx context.Context, o InitOptions) (*InitResult, error) {
 		if err := writeNew(cfg.KeyFile, b); err != nil {
 			return nil, err
 		}
+		wroteKey = true
 		keys, _ = format.DeriveKeys(master)
 		res.NewKey = true
 	}
@@ -164,7 +167,7 @@ func Init(ctx context.Context, o InitOptions) (*InitResult, error) {
 		return nil, fmt.Errorf("the server accepted the token but a test request failed: %w", err)
 	}
 	if who.DomainID != "" && who.DomainID != keys.DomainID {
-		if res.NewKey { // the key we just generated protects nothing: do not leave a stray key behind to be mistaken for the real one
+		if wroteKey { // the key we just wrote protects nothing here: do not leave a stray key behind to be mistaken for the real one
 			_ = os.Remove(cfg.KeyFile)
 		}
 		return nil, fmt.Errorf("%s already belongs to key domain %s but this host's key is %s. The token has been used up. Import the key that created that repository first (incus-backup key import, from your recovery key), then ask the server for a new token and run init again. A new key was NOT kept",

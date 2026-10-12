@@ -82,6 +82,9 @@ type ExtractOptions struct {
 	Paths []string
 	// SkipVerify turns off the SHA-256 check of extracted content (the default checks every file).
 	SkipVerify bool
+	// SkipDevices creates no character/block device nodes (fifos are still created): for extracting
+	// an untrusted catalog as root into a scratch directory.
+	SkipDevices bool
 }
 
 func safePath(root, name string) (string, error) {
@@ -224,6 +227,9 @@ func (t *Tree) Extract(dest string, pay Payload, o ExtractOptions) error {
 				return err
 			}
 		case KChar, KBlock, KFifo:
+			if o.SkipDevices && e.Kind != KFifo {
+				continue
+			}
 			mode := e.Mode
 			switch e.Kind {
 			case KChar:
@@ -296,6 +302,9 @@ func extractFile(p, rel string, e *Entry, pay Payload, o ExtractOptions) error {
 	return f.Close()
 }
 
+// extractingUID is the uid files are created as when ownership is not restored (a seam for tests).
+var extractingUID = os.Geteuid
+
 func applyMeta(p string, e *Entry, link bool, o ExtractOptions) error {
 	if fi, err := os.Lstat(p); err != nil || (!link && fi.Mode()&os.ModeSymlink != 0) {
 		return fmt.Errorf("%s is a symlink or vanished: refusing to apply metadata through it", p)
@@ -306,6 +315,11 @@ func applyMeta(p string, e *Entry, link bool, o ExtractOptions) error {
 		}
 	}
 	for _, x := range e.Xattrs {
+		if o.NoChown && (strings.HasPrefix(x.Name, "security.") || strings.HasPrefix(x.Name, "trusted.")) {
+			// ownership was not restored: security.capability and friends would land on a file the
+			// extracting user owns (as GNU tar without --same-owner, they are not applied)
+			continue
+		}
 		if err := unix.Lsetxattr(p, x.Name, x.Value, 0); err != nil {
 			if errors.Is(err, unix.ENOTSUP) || (errors.Is(err, unix.EPERM) && o.NoChown) {
 				continue
@@ -317,7 +331,14 @@ func applyMeta(p string, e *Entry, link bool, o ExtractOptions) error {
 	if link {
 		return unix.UtimesNanoAt(unix.AT_FDCWD, p, ts, unix.AT_SYMLINK_NOFOLLOW)
 	}
-	if err := os.Chmod(p, fileMode(e.Mode)); err != nil {
+	m := e.Mode
+	if o.NoChown && int(e.UID) != extractingUID() {
+		m &^= 0o4000 // ownership was not restored: never hand the extracting user (root) a setuid file
+		if e.Kind != KDir {
+			m &^= 0o2000 // nor a setgid file (a setgid directory only steers group inheritance)
+		}
+	}
+	if err := os.Chmod(p, fileMode(m)); err != nil {
 		return err
 	}
 	return unix.UtimesNanoAt(unix.AT_FDCWD, p, ts, 0)

@@ -20,7 +20,7 @@ import { ApiError } from '@/api/client'
 import { createCredential, unavailableReason, webauthnError } from '@/lib/webauthn'
 import { session, refreshUser } from '@/stores/session'
 import { toast, errorText } from '@/stores/toast'
-import { passwordCheckError } from '@/lib/authErrors'
+import { passwordCheckError, needsPassword } from '@/lib/authErrors'
 
 const props = withDefaults(defineProps<{ enrol?: boolean }>(), { enrol: false })
 const emit = defineEmits<{ added: [WebAuthnKey] }>()
@@ -30,7 +30,6 @@ const list = computed(() => keys.data.value ?? [])
 const blocked = unavailableReason()
 const ssoOnly = computed(() => session.user?.has_password === false)
 
-const needsPassword = (e: unknown) => e instanceof ApiError && e.status === 400 && !!(e.body as { password_required?: boolean } | null)?.password_required
 
 function suggestName(): string {
   const ua = navigator.userAgent

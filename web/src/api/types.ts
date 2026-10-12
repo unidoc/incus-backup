@@ -260,6 +260,8 @@ export interface TOTPEnrolment {
 /** Anonymous struct{ Code string } in POST /me/totp/confirm (untagged). */
 export interface ConfirmTOTPRequest {
   code: string;
+  /** Needed when the sign-in is older than 10 minutes (the answer is 400 password_required). */
+  password?: string;
 }
 
 /** Anonymous map in POST /me/totp/confirm. */
@@ -293,7 +295,7 @@ export interface TokenInfo {
   name: string;
   role: Role;
   created_at: RFC3339;
-  /** Missing: never expires. */
+  /** Missing: never expires (only tokens created before every token got a lifetime). */
   expires_at?: RFC3339;
   last_used_at?: RFC3339;
 }
@@ -303,8 +305,10 @@ export interface CreateTokenRequest {
   name: string;
   /** At most the user's own role; empty or missing means the user's role. */
   role?: Role;
-  /** Hours; 0 or missing means no expiry. Fractions allowed. */
+  /** Hours; 0 or missing means 90 days; at most 365 days (8760 hours). Fractions allowed. */
   ttl_hours?: number;
+  /** Needed when the sign-in is older than 10 minutes (the answer is 400 password_required). */
+  password?: string;
 }
 
 /** Anonymous map in POST /me/tokens. */

@@ -179,4 +179,22 @@ export const http = {
 }
 
 /** Encode one path segment (names may contain dots, spaces, slashes are refused by the server anyway). */
+/**
+ * Routes that answer 401 for a WRONG PASSWORD (not only for "not signed in"), e.g. token creation and
+ * two-factor enrolment, which re-check the password when the sign-in is older than 10 minutes. They must
+ * not trigger the sign-in redirect: on a 401 we probe GET /session (which redirects when the session
+ * really ended) and otherwise rethrow as "password wrong".
+ */
+export async function passwordChecked<T>(call: () => Promise<T>): Promise<T> {
+  try {
+    return await call()
+  } catch (e) {
+    if (e instanceof ApiError && e.status === 401) {
+      await http.get('/session')
+      throw new ApiError(401, 'The password is wrong.', e.body, e.method, e.path)
+    }
+    throw e
+  }
+}
+
 export const seg = (s: string) => encodeURIComponent(s)

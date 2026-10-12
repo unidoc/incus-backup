@@ -2,6 +2,7 @@ package format
 
 import (
 	"bytes"
+	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"flag"
@@ -412,6 +413,50 @@ func TestKeyFile(t *testing.T) {
 	got, err = none.Unwrap("")
 	if err != nil || !bytes.Equal(got, m) {
 		t.Fatalf("unprotected: %v", err)
+	}
+}
+
+// A damaged or hostile key file is an error, never a panic or a huge allocation (review F11).
+func TestKeyFileUnwrapRejectsBadStoredFields(t *testing.T) {
+	m := fixedMaster()
+	p := Argon2Params{Time: 1, MemKiB: 1024, Threads: 1}
+	fresh := func() *KeyFile {
+		kf, err := NewKeyFile(m, "correct horse", p, nil, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return kf
+	}
+	cases := map[string]func(kf *KeyFile){
+		"short nonce":  func(kf *KeyFile) { kf.Nonce = base64.StdEncoding.EncodeToString(make([]byte, NonceSize-1)) },
+		"long nonce":   func(kf *KeyFile) { kf.Nonce = base64.StdEncoding.EncodeToString(make([]byte, NonceSize+1)) },
+		"empty nonce":  func(kf *KeyFile) { kf.Nonce = "" },
+		"zero threads": func(kf *KeyFile) { kf.Argon2.Threads = 0 },
+		"zero time":    func(kf *KeyFile) { kf.Argon2.Time = 0 },
+		"huge time":    func(kf *KeyFile) { kf.Argon2.Time = 1 << 30 },
+		"huge memory":  func(kf *KeyFile) { kf.Argon2.MemKiB = 1 << 31 },
+		"tiny memory":  func(kf *KeyFile) { kf.Argon2.MemKiB = 1 },
+		"many threads": func(kf *KeyFile) { kf.Argon2.Threads = 255 },
+	}
+	for name, mutate := range cases {
+		kf := fresh()
+		mutate(kf)
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("%s: panic: %v", name, r)
+				}
+			}()
+			if _, err := kf.Unwrap("correct horse"); err == nil {
+				t.Errorf("%s: accepted", name)
+			}
+		}()
+	}
+	if _, err := NewKeyFile(m, "x", Argon2Params{}, nil, nil); err == nil {
+		t.Error("NewKeyFile accepted zero Argon2 parameters")
+	}
+	if got, err := fresh().Unwrap("correct horse"); err != nil || !bytes.Equal(got, m) {
+		t.Fatalf("a valid file still opens: %v", err)
 	}
 }
 

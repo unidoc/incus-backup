@@ -95,7 +95,7 @@ func (s *Server) authRoutes(h routeFn) {
 		}
 		ip := clientIP(r)
 		sess, err := s.Auth.Login(r.Context(), req.Name, req.Password, req.Code, ip, r.UserAgent())
-		entry := auth.AuditEntry{Actor: req.Name, Action: "login", IP: ip, OK: err == nil}
+		entry := auth.AuditEntry{Actor: truncName(req.Name), Action: "login", IP: ip, OK: err == nil}
 		if err != nil && !errors.Is(err, auth.ErrNeedTOTP) {
 			entry.Detail = mustJSON(map[string]any{"method": "password", "reason": err.Error()})
 			_ = s.Auth.Audit(r.Context(), entry)
@@ -258,6 +258,15 @@ func (s *Server) authRoutes(h routeFn) {
 		if !ok {
 			return
 		}
+		var req docPasswordOpt
+		if err := decode(r, &req); err != nil {
+			s.fail(w, r, err)
+			return
+		}
+		if err := s.Auth.Reauthenticate(r.Context(), p.User, cookieValue(r), req.Password); err != nil { // a stolen cookie must not add a factor
+			s.authFail(w, r, err)
+			return
+		}
 		en, err := s.Auth.BeginTOTP(r.Context(), p.User)
 		if err != nil {
 			s.authFail(w, r, err)
@@ -270,9 +279,13 @@ func (s *Server) authRoutes(h routeFn) {
 		if !ok {
 			return
 		}
-		var req struct{ Code string }
+		var req struct{ Code, Password string }
 		if err := decode(r, &req); err != nil {
 			s.fail(w, r, err)
+			return
+		}
+		if err := s.Auth.Reauthenticate(r.Context(), p.User, cookieValue(r), req.Password); err != nil {
+			s.authFail(w, r, err)
 			return
 		}
 		codes, err := s.Auth.ConfirmTOTP(r.Context(), p.User, req.Code)
@@ -342,12 +355,21 @@ func (s *Server) authRoutes(h routeFn) {
 		var req struct {
 			Name     string
 			Role     auth.Role
-			TTLHours float64 `json:"ttl_hours"`
+			TTLHours float64 `json:"ttl_hours"` // 0 = auth.DefaultTokenTTL; at most auth.MaxTokenTTL
+			Password string  `json:"password"`  // needed when the sign-in is older than auth.ReauthWindow
 			// Repositories restricts the token (docs/permissions.md); absent = not restricted.
 			Repositories []string `json:"repositories"`
 		}
 		if err := decode(r, &req); err != nil {
 			s.fail(w, r, err)
+			return
+		}
+		if req.TTLHours < 0 || req.TTLHours > auth.MaxTokenTTL.Hours() { // checked before the Duration conversion, which overflows
+			s.fail(w, r, fmt.Errorf("%w: ttl_hours is 0 (default %d days) up to %d days", service.ErrBadRequest, int(auth.DefaultTokenTTL.Hours()/24), int(auth.MaxTokenTTL.Hours()/24)))
+			return
+		}
+		if err := s.Auth.Reauthenticate(r.Context(), p.User, cookieValue(r), req.Password); err != nil { // a stolen cookie must not mint a long-lived key
+			s.authFail(w, r, err)
 			return
 		}
 		if req.Role == "" {

@@ -73,7 +73,7 @@ func (s *Service) SyncMissing(ctx context.Context, repo *Repo, ids []string) ([]
 	if err != nil {
 		return nil, err
 	}
-	pin, err := s.syncPinFor(repo)
+	pin, err := s.syncPinFor(ctx, repo)
 	if err != nil {
 		return nil, err
 	}
@@ -94,12 +94,17 @@ func (s *Service) SyncPutChunk(ctx context.Context, repo *Repo, idHex string, bl
 	if err != nil {
 		return bad("%v", err)
 	}
-	pin, err := s.syncPinFor(repo)
+	pin, err := s.syncPinFor(ctx, repo)
 	if err != nil {
 		return err
 	}
 	if _, err := pin.PutChunk(id, blob); err != nil {
-		return bad("%v", err)
+		if errors.Is(err, datastore.ErrInvalid) {
+			return bad("%v", err)
+		}
+		// maintenance mode, a storage fault or a closed pin is not the sender's mistake: it must stay
+		// retryable (as in SessionPutChunk)
+		return err
 	}
 	return nil
 }
@@ -111,6 +116,15 @@ func (s *Service) SyncPutSnapshot(ctx context.Context, repo *Repo, domain string
 	m := put.Meta
 	if !datastore.ValidGroup(m.GroupID) || !format.ValidSnapshotID(m.SnapshotID) {
 		return bad("invalid group or snapshot id")
+	}
+	// The id of a snapshot carries the time it was taken (UTC, to the second): a retention time more than
+	// a day before it cannot be true (a backup commits after it starts), so it is refused. This keeps an
+	// honest-but-buggy peer consistent; it does not stop a peer that forges the id as well (docs/design.md 3.3,
+	// "What a sync-write peer is trusted with").
+	if made, err := format.SnapshotIDTime(m.SnapshotID); err != nil {
+		return bad("%v", err)
+	} else if !m.Committed.IsZero() && m.Committed.Before(made.Add(-24*time.Hour)) {
+		return bad("the commit time %s is more than a day before the snapshot id's own time %s", m.Committed.UTC().Format(time.RFC3339), made.Format(time.RFC3339))
 	}
 	if err := s.pinDomain(ctx, repo.ID, domain); err != nil {
 		return err
@@ -171,7 +185,7 @@ func (s *Service) SyncPutSnapshot(ctx context.Context, repo *Repo, domain string
 		return err
 	}
 	finish("committed")
-	s.releaseSyncPin(repo.ID)
+	s.releaseSyncPin(ctx, repo.ID)
 	var oid string
 	if err := s.DB.Pool().QueryRow(ctx, `INSERT INTO storage_objects (repository_id, host_name, project, name, kind, group_id, policy_name, retention_policy, first_seen_at, last_seen_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,$8)

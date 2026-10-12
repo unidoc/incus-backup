@@ -152,6 +152,15 @@ func (e *Engine) planDisk(ctx context.Context, d Disk, running bool, ref incusx.
 				if err != nil {
 					continue
 				}
+				// the index is only as trustworthy as the manifest that seals its digest (as in Locate)
+				mb, err := t.Client.Manifest(ctx, group, dp.baseSnap)
+				if err != nil {
+					continue
+				}
+				man, err := t.Keys.OpenManifest(mb, group, dp.baseSnap)
+				if err != nil || man.IndexDigest != format.IndexDigest(b) || man.Object.Kind != KindBlock {
+					continue // no trusted base: falls through to a full read
+				}
 				if x, err := format.ParseIndex(b); err == nil && x.Kind == format.IndexFixed {
 					got = x
 					break

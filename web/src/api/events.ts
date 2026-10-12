@@ -27,6 +27,31 @@ export class EventBus {
     set.add(fn)
     return () => set!.delete(fn)
   }
+  /**
+   * on(), but handlers run only while the tab is visible. Events that arrive in a hidden tab are
+   * remembered (one per subscription) and the handler runs once when the tab becomes visible again.
+   * Refetching on an event is a request like any other, and the server counts it as activity: a hidden
+   * tab must not keep its session alive (docs/authentication.md, "What counts as activity").
+   */
+  onVisible(type: BusKey, fn: Handler): () => void {
+    let pending: [unknown, LiveEvent] | null = null
+    const run = (d: unknown, ev: LiveEvent) => {
+      if (typeof document === 'undefined' || document.visibilityState === 'visible') fn(d, ev)
+      else pending = [d, ev]
+    }
+    const onVis = () => {
+      if (document.visibilityState !== 'visible' || !pending) return
+      const [d, ev] = pending
+      pending = null
+      try { fn(d, ev) } catch (e) { console.error('event handler failed', e) }
+    }
+    if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVis)
+    const off = this.on(type, run)
+    return () => {
+      off()
+      if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVis)
+    }
+  }
   emit(ev: LiveEvent | { type: 'resync'; data: null }) {
     for (const key of [ev.type, '*'] as BusKey[]) {
       for (const fn of this.handlers.get(key) ?? []) {

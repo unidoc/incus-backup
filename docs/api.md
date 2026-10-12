@@ -68,11 +68,11 @@ A user's global role may then be `none`.
 | `GET/POST /users`, `PUT/DELETE /users/{name}` | admin | `{name, password, role, display, email, must_change}`; `PUT` takes `{role?, display_name?, email?, disabled?}`; the last admin cannot be removed |
 | `POST /users/{name}/password`, `DELETE /users/{name}/totp` | admin | reset password (ends sessions) / remove 2FA |
 | `POST /me/password` | any user | `{current, new}`; other sessions end |
-| `POST /me/totp` | any user | start 2FA enrolment → `{secret, uri}` (render `uri` as QR) |
-| `POST /me/totp/confirm` | any user | `{code}` → `{recovery_codes[10]}` (shown once) |
+| `POST /me/totp` | any user | start 2FA enrolment → `{secret, uri}` (render `uri` as QR); `{password}` when the sign-in is older than 10 minutes (else 400 `password_required`); refused for single sign-on accounts |
+| `POST /me/totp/confirm` | any user | `{code, password?}` → `{recovery_codes[10]}` (shown once); `password` as for `POST /me/totp` |
 | `DELETE /me/totp` | any user | `{password}` |
 | `GET /me/sessions`, `DELETE /me/sessions/{id}` | any user | list / revoke own sessions |
-| `GET/POST /me/tokens`, `DELETE /me/tokens/{id}` | any user | API tokens: `{name, role, ttl_hours, repositories?}`; role ≤ own role; `repositories` restricts the token (no global rights then); secret shown once |
+| `GET/POST /me/tokens`, `DELETE /me/tokens/{id}` | any user | API tokens: `{name, role, ttl_hours, repositories?, password?}`; role ≤ own role; a token always expires: `ttl_hours` 0 or missing = 90 days, at most 365 days (400 above); `password` is needed when the sign-in is older than 10 minutes (400 `password_required`, 401 wrong password), as for passkeys; accounts that sign in only through single sign-on get no tokens (400); `repositories` restricts the token (no global rights then); secret shown once |
 | `GET/PUT /users/{name}/access` | admin | `{global_role, scoped, scopes: [{repository, role}]}`; `PUT` takes `{scoped, scopes}` (see permissions.md) |
 | `GET /api-tokens`, `DELETE /api-tokens/{id}` | admin | every user's tokens (owner, effective role, repositories, expiry); revoke any |
 | `GET /audit` | admin | `?actor=&action=prefix&before=<id>&limit=`; newest first |
@@ -81,7 +81,7 @@ A user's global role may then be `none`.
 | `GET/POST /oidc/providers`, `PUT/DELETE /oidc/providers/{name}`, `POST /oidc/providers/{name}/test` | admin | identity providers (client secret write-only) and a discovery test |
 | `GET/PUT /auth/settings` | admin | `require_2fa` (none, admin, all), `local_login`, `webauthn_rp_id`, `webauthn_origins`, and what is in effect |
 
-Sessions expire after 30 min idle / 12 h absolute. Five failed logins lock an account for growing intervals
+Sessions expire after 30 min idle / 12 h absolute. Idle means no request from a person: the open event stream's periodic session checks do not renew it, and the console pauses its event-driven refetches while the tab is hidden (`docs/authentication.md`, "What counts as activity"). Five failed logins lock an account for growing intervals
 (1–15 min); login attempts are also rate limited per address.
 
 ## Dashboard and repositories
@@ -287,11 +287,11 @@ repository), `list` (filtered per item), `global` (the global role), `self` (any
 | Me | `GET /me/sessions` | readonly | self | My sessions |
 | Me | `DELETE /me/sessions/{id}` | readonly | self | End one of my sessions |
 | Me | `GET /me/tokens` | readonly | self | My API tokens |
-| Me | `POST /me/tokens` | readonly | self | Create an API token (optionally restricted to repositories); the secret is shown once |
+| Me | `POST /me/tokens` | readonly | self | Create an API token (optionally restricted to repositories; 90 days unless ttl_hours, at most 365 days; password needed when the sign-in is older than 10 minutes; not for single sign-on accounts); the secret is shown once |
 | Me | `DELETE /me/tokens/{id}` | readonly | self | Revoke one of my API tokens |
-| Me | `POST /me/totp` | readonly | self | Begin two-factor enrolment |
+| Me | `POST /me/totp` | readonly | self | Begin two-factor enrolment (password needed when the sign-in is older than 10 minutes) |
 | Me | `DELETE /me/totp` | readonly | self | Remove my two-factor enrolment (needs the password) |
-| Me | `POST /me/totp/confirm` | readonly | self | Confirm two-factor enrolment; returns recovery codes once |
+| Me | `POST /me/totp/confirm` | readonly | self | Confirm two-factor enrolment; returns recovery codes once (password needed when the sign-in is older than 10 minutes) |
 | Me | `GET /me/webauthn` | readonly | self | My passkeys and security keys |
 | Me | `POST /me/webauthn/register/begin` | readonly | self | Start registering a passkey or security key (password needed when the sign-in is older than 10 minutes); returns navigator.credentials.create() options |
 | Me | `POST /me/webauthn/register/finish` | readonly | self | Finish registering: the browser's credential and a name |

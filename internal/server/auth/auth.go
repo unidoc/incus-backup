@@ -16,6 +16,7 @@ import (
 	"fmt"
 	"runtime"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 	"unicode/utf8"
@@ -104,6 +105,54 @@ type Store struct {
 	Sealer Sealer
 	Now    func() time.Time
 	Issuer string // shown in authenticator apps
+
+	ghosts ghostLocks // lockout state for names that have no password to guess (see Login)
+}
+
+// ghostLocks gives names with no password account (unknown names, single sign-on accounts) the same
+// lockout a real account has, so the answer to repeated wrong guesses (429 after five) does not tell
+// whether a name exists. It is in memory and bounded: a restart forgets it, and when it is full of live
+// locks new names are simply not tracked (they keep answering 401), which only ever costs the attacker.
+type ghostLocks struct {
+	mu sync.Mutex
+	m  map[string]ghostLock
+}
+
+type ghostLock struct {
+	failed int
+	until  time.Time
+}
+
+const maxGhostLocks = 10000
+
+func (g *ghostLocks) locked(name string, now time.Time) bool {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.m[name].until.After(now)
+}
+
+func (g *ghostLocks) fail(name string, now time.Time) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if g.m == nil {
+		g.m = map[string]ghostLock{}
+	}
+	e, ok := g.m[name]
+	if !ok && len(g.m) >= maxGhostLocks {
+		for k, v := range g.m { // drop what has expired
+			if !v.until.After(now) {
+				delete(g.m, k)
+			}
+		}
+		if len(g.m) >= maxGhostLocks {
+			return
+		}
+	}
+	e.failed++
+	if d := lockFor(e.failed); d > 0 {
+		e.until = now.Add(d)
+	}
+	g.m[name] = e
 }
 
 // New returns a Store.
@@ -507,16 +556,19 @@ func (s *Store) Login(ctx context.Context, name, password, code, ip, ua string) 
 	err = tx.QueryRow(ctx, `SELECT id::text, password_hash, disabled, totp_enabled, totp_sealed, totp_last_step, recovery_hashes, failed_logins, locked_until,
 			EXISTS (SELECT 1 FROM webauthn_credentials w WHERE w.user_id=users.id)
 		FROM users WHERE lower(name)=lower($1) FOR UPDATE`, name).Scan(&id, &enc, &disabled, &totpOn, &totpSealed, &lastStep, &recovery, &failed, &locked, &keys)
-	if errors.Is(err, pgx.ErrNoRows) {
+	if errors.Is(err, pgx.ErrNoRows) || (err == nil && enc == "") {
+		// An unknown name or a single sign-on account (no password can match): count and lock in memory
+		// exactly like a real account, so the lockout answer does not tell whether the name exists.
+		key := strings.ToLower(name)
+		if s.ghosts.locked(key, now) {
+			return nil, ErrLocked
+		}
 		checkPassword(password, dummyHash) // same work as a real failure
+		s.ghosts.fail(key, now)
 		return nil, ErrInvalidCredentials
 	}
 	if err != nil {
 		return nil, err
-	}
-	if enc == "" { // single sign-on account: no password can match; nothing to count either
-		checkPassword(password, dummyHash)
-		return nil, ErrInvalidCredentials
 	}
 	if locked != nil && locked.After(now) {
 		return nil, ErrLocked
@@ -611,6 +663,16 @@ func truncate(s string, n int) string {
 // Authenticate resolves a session cookie value. Activity renews the idle window; the absolute
 // lifetime never moves.
 func (s *Store) Authenticate(ctx context.Context, token string) (*Principal, error) {
+	return s.authenticate(ctx, token, true)
+}
+
+// Recheck validates a session for a long-lived stream without counting as activity: it never moves
+// last_seen, so an open event stream cannot keep an idle session alive.
+func (s *Store) Recheck(ctx context.Context, token string) (*Principal, error) {
+	return s.authenticate(ctx, token, false)
+}
+
+func (s *Store) authenticate(ctx context.Context, token string, renew bool) (*Principal, error) {
 	if token == "" {
 		return nil, ErrNoSession
 	}
@@ -635,7 +697,7 @@ func (s *Store) Authenticate(ctx context.Context, token string) (*Principal, err
 		_, _ = s.Pool.Exec(ctx, `DELETE FROM user_sessions WHERE token_hash=$1`, h)
 		return nil, ErrNoSession
 	}
-	if now.Sub(last) > time.Minute { // do not write on every request
+	if renew && now.Sub(last) > time.Minute { // do not write on every request
 		_, _ = s.Pool.Exec(ctx, `UPDATE user_sessions SET last_seen=$2 WHERE token_hash=$1`, h, now)
 	}
 	p.Kind, p.Role = "user", Role(role)

@@ -249,9 +249,19 @@ func (s *Store) SetUserAccess(ctx context.Context, name string, scoped bool, sco
 	return tx.Commit(ctx)
 }
 
+// DefaultTokenTTL is the lifetime of a token created without one; MaxTokenTTL is the longest a token
+// may live. A token never lives forever: it survives a password reset, so it must expire.
+const (
+	DefaultTokenTTL = 90 * 24 * time.Hour
+	MaxTokenTTL     = 365 * 24 * time.Hour
+)
+
 // CreateTokenFor makes an API token for a user, optionally restricted to repositories (repos != nil;
 // an empty non-nil list is refused). Its role cannot exceed the highest role the owner has anywhere;
 // at use it is capped per repository by the owner's role there. The secret is returned once.
+// ttl <= 0 means DefaultTokenTTL, more than MaxTokenTTL is refused. A user without a local password
+// (single sign-on only) gets no tokens: the role of a long-lived local key would be the last one the
+// identity provider mapped, and the provider could not take it back.
 func (s *Store) CreateTokenFor(ctx context.Context, userName, name string, role Role, ttl time.Duration, repos []string) (string, *TokenInfo, error) {
 	if name == "" || len(name) > 64 {
 		return "", nil, fmt.Errorf("%w: token name", ErrBad)
@@ -266,6 +276,12 @@ func (s *Store) CreateTokenFor(ctx context.Context, userName, name string, role 
 	if err != nil {
 		return "", nil, err
 	}
+	if !u.HasPassword {
+		return "", nil, fmt.Errorf("%w: %v: API tokens would outlive the identity provider's role mapping", ErrBad, ErrNoLocalPassword)
+	}
+	if ttl > MaxTokenTTL {
+		return "", nil, fmt.Errorf("%w: a token lives at most %d days", ErrBad, int(MaxTokenTTL/(24*time.Hour)))
+	}
 	owner := Principal{Kind: "user", UserID: u.ID, Role: u.Role}
 	if err := s.loadAccess(ctx, &owner, "", "", false); err != nil {
 		return "", nil, err
@@ -275,11 +291,10 @@ func (s *Store) CreateTokenFor(ctx context.Context, userName, name string, role 
 	}
 	secret := tokenPrefix + randToken(32)
 	now := s.Now()
-	var exp *time.Time
-	if ttl > 0 {
-		t := now.Add(ttl)
-		exp = &t
+	if ttl <= 0 {
+		ttl = DefaultTokenTTL
 	}
+	exp := now.Add(ttl)
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
 		return "", nil, err
@@ -288,7 +303,7 @@ func (s *Store) CreateTokenFor(ctx context.Context, userName, name string, role 
 	var ti TokenInfo
 	var r string
 	err = tx.QueryRow(ctx, `INSERT INTO api_tokens (user_id, name, token_hash, role, created_at, expires_at, repo_restricted) VALUES ($1::uuid,$2,$3,$4,$5,$6,$7)
-		RETURNING id::text, name, role, created_at, expires_at`, u.ID, name, hashToken(secret), string(role), now, exp, repos != nil).Scan(&ti.ID, &ti.Name, &r, &ti.Created, &ti.Expires)
+		RETURNING id::text, name, role, created_at, expires_at`, u.ID, name, hashToken(secret), string(role), now, &exp, repos != nil).Scan(&ti.ID, &ti.Name, &r, &ti.Created, &ti.Expires)
 	if err != nil {
 		if strings.Contains(err.Error(), "api_tokens_user_id_name_key") {
 			return "", nil, fmt.Errorf("%w: token %q", ErrExists, name)

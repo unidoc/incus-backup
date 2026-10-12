@@ -4,11 +4,13 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 
 	"github.com/unidoc/incus-backup/internal/api"
 	"github.com/unidoc/incus-backup/internal/archive"
 	"github.com/unidoc/incus-backup/internal/format"
+	"github.com/unidoc/incus-backup/internal/fscat"
 )
 
 // Engine entry points used by host jobs (package client/jobs).
@@ -83,5 +85,9 @@ func (e *Engine) ExtractFSPaths(ctx context.Context, server, project, name, snap
 	if err != nil {
 		return loc.Snapshot, err
 	}
-	return loc.Snapshot, v.Extract(dest, paths, true)
+	// The daemon runs as root: extract WITH ownership, so the delivered tar carries the catalog uid/gid
+	// and its set-id bits are faithful (extracting without ownership as root would hand every file to
+	// root, and fscat then drops the set-id bits). Device nodes of a guest catalog are never created on
+	// the host; dest lives in a private 0700 scratch directory. Not root: ownership cannot be restored.
+	return loc.Snapshot, v.Tree.Extract(dest, fscat.FromReaderAt(v), fscat.ExtractOptions{NoChown: os.Geteuid() != 0, SkipDevices: true, Paths: paths})
 }

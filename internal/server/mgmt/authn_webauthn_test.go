@@ -549,8 +549,8 @@ func TestWebAuthnRegistrationNeedsRecentSignIn(t *testing.T) {
 	if code, out := bb.do("POST", "/api/v1/me/webauthn/register/finish", map[string]any{"ceremony": c.Ceremony, "name": "x", "credential": json.RawMessage(resp)}); code != 400 {
 		t.Fatalf("another user's ceremony: %d %s", code, out)
 	}
-	// API tokens have no "me" for sign-in methods
-	code, out = b.do("POST", "/api/v1/me/tokens", map[string]any{"name": "ci", "role": "readonly"})
+	// API tokens have no "me" for sign-in methods (creating one on an old session needs the password too)
+	code, out = b.do("POST", "/api/v1/me/tokens", map[string]any{"name": "ci", "role": "readonly", "password": pw})
 	var tk struct{ Token string }
 	_ = json.Unmarshal(out, &tk)
 	if code != 201 {

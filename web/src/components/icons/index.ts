@@ -76,6 +76,7 @@ import iCommand from 'lucide-static/icons/command.svg?raw'
 import iShieldAlert from 'lucide-static/icons/shield-alert.svg?raw'
 import iFingerprint from 'lucide-static/icons/fingerprint.svg?raw'
 import iSmartphone from 'lucide-static/icons/smartphone.svg?raw'
+import { svgInner } from './svgInner'
 
 const raw = {
   'layout-dashboard': iLayoutDashboard,
@@ -159,7 +160,7 @@ export type IconName = keyof typeof raw
 
 /** Inner markup of each icon (the <svg> wrapper is rendered by Icon.vue). */
 export const icons: Record<IconName, string> = Object.fromEntries(
-  Object.entries(raw).map(([k, v]) => [k, v.replace(/<!--[\s\S]*?-->/g, '').replace(/^[\s\S]*?<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '').trim()]),
+  Object.entries(raw).map(([k, v]) => [k, svgInner(v)]),
 ) as Record<IconName, string>
 
 export const iconNames = Object.keys(raw) as IconName[]

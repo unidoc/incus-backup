@@ -12,6 +12,7 @@ func TestSafeNextKeepsTheBrowserOnThisSite(t *testing.T) {
 	for in, want := range map[string]string{
 		"/repos?x=1": "/repos?x=1", "": "/", "https://evil.example": "/", "//evil.example/x": "/", "/\\evil.example": "/",
 		"/api/v1/session": "/", "/ok\r\nSet-Cookie: x": "/", "repos": "/",
+		"/\t/evil.example/": "/", "/\n/evil": "/", "/a\x00b": "/", "/a\x7fb": "/", "/\x1f/evil": "/", "/jobs?x=1": "/jobs?x=1",
 	} {
 		if got := SafeNext(in); got != want {
 			t.Errorf("SafeNext(%q) = %q, want %q", in, got, want)

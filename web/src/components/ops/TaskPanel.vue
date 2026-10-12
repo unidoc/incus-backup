@@ -57,7 +57,7 @@ async function poll() {
 }
 
 watch(() => props.id, () => { t.value = null; log.value = []; after = 0; emittedDone = false; void poll() }, { immediate: true })
-const off = bus.on('task', (d) => { if ((d as { id?: string })?.id === props.id && t.value && isActive(t.value)) void poll() })
+const off = bus.onVisible('task', (d) => { if ((d as { id?: string })?.id === props.id && t.value && isActive(t.value)) void poll() })
 onBeforeUnmount(() => { alive = false; off(); ctrl?.abort(); if (timer) clearTimeout(timer) })
 
 function onScroll() {

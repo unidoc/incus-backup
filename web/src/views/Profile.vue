@@ -23,7 +23,8 @@ import { session, refreshUser } from '@/stores/session'
 import { passwordStrength } from '@/lib/password'
 import { ROLES, atLeast } from '@/api/perms'
 import { toast, errorText } from '@/stores/toast'
-import { passwordCheckError } from '@/lib/authErrors'
+import { ApiError } from '@/api/client'
+import { passwordCheckError, needsPassword } from '@/lib/authErrors'
 import { confirm } from '@/composables/useConfirm'
 import { useClipboard, downloadText } from '@/composables/useClipboard'
 import type { ColumnDef } from '@/lib/table'
@@ -58,18 +59,24 @@ async function changePassword() {
 }
 
 // ---- 2FA enrolment: start -> scan + confirm -> recovery codes (shown once)
-const enrol = ref<{ step: number; data: TOTPEnrolment | null; qr: string; code: string; codes: string[]; busy: boolean; error: string }>({ step: -1, data: null, qr: '', code: '', codes: [], busy: false, error: '' })
+// ask: the sign-in is older than 10 minutes, so the server wants the password again (as for keys and tokens)
+type Enrol = { step: number; data: TOTPEnrolment | null; qr: string; code: string; codes: string[]; busy: boolean; error: string; ask: boolean; password: string }
+const blankEnrol = (step = -1): Enrol => ({ step, data: null, qr: '', code: '', codes: [], busy: false, error: '', ask: false, password: '' })
+const enrol = ref<Enrol>(blankEnrol())
+const askText = 'Your sign-in is older than 10 minutes: confirm your password to set up two-factor authentication.'
+const pwFailed = (e: unknown) => e instanceof ApiError && (e.status === 401 || e.status === 429)
 const codeEl = ref<HTMLInputElement | null>(null)
-async function startEnrol() {
-  enrol.value = { step: 0, data: null, qr: '', code: '', codes: [], busy: true, error: '' }
+async function startEnrol(password?: string) {
+  enrol.value = { ...blankEnrol(0), busy: true, ask: enrol.value.ask, password: password ?? '' }
   try {
-    const d = await api.me.beginTOTP()
+    const d = await api.me.beginTOTP(password || undefined)
     const qr = await QRCode.toString(d.uri, { type: 'svg', margin: 1, errorCorrectionLevel: 'M', color: { dark: '#0f1720', light: '#ffffff' } })
     enrol.value = { ...enrol.value, data: d, qr, busy: false }
     await nextTick()
     codeEl.value?.focus()
   } catch (e) {
-    enrol.value = { ...enrol.value, busy: false, error: errorText(e) }
+    if (needsPassword(e)) enrol.value = { ...enrol.value, busy: false, ask: true, error: password ? passwordCheckError(e) : askText }
+    else enrol.value = { ...enrol.value, busy: false, error: pwFailed(e) ? passwordCheckError(e) : errorText(e) }
   }
 }
 async function confirmEnrol() {
@@ -77,22 +84,24 @@ async function confirmEnrol() {
   enrol.value.busy = true
   enrol.value.error = ''
   try {
-    const r = await api.me.confirmTOTP({ code: enrol.value.code })
-    enrol.value = { ...enrol.value, step: 1, codes: r.recovery_codes, busy: false, data: null, qr: '' }
+    const r = await api.me.confirmTOTP({ code: enrol.value.code, password: enrol.value.ask && enrol.value.password ? enrol.value.password : undefined })
+    enrol.value = { ...enrol.value, step: 1, codes: r.recovery_codes, busy: false, data: null, qr: '', password: '' }
     await refreshUser()
   } catch (e) {
-    enrol.value = { ...enrol.value, busy: false, error: `${errorText(e)}. Check the time on your phone and enter the current code.`, code: '' }
+    if (needsPassword(e)) enrol.value = { ...enrol.value, busy: false, ask: true, error: enrol.value.password ? passwordCheckError(e) : askText }
+    else if (pwFailed(e)) enrol.value = { ...enrol.value, busy: false, error: passwordCheckError(e) }
+    else enrol.value = { ...enrol.value, busy: false, error: `${errorText(e)}. Check the time on your phone and enter the current code.`, code: '' }
   }
 }
 const savedCodes = ref(false)
 const { copy: copyCodes, copied: codesCopied } = useClipboard()
 const codesText = computed(() => `incus-backup recovery codes for ${session.name} (${location.host})\nEach code works once.\n\n${enrol.value.codes.join('\n')}\n`)
 function finishEnrol() {
-  enrol.value = { step: -1, data: null, qr: '', code: '', codes: [], busy: false, error: '' }
+  enrol.value = blankEnrol()
   savedCodes.value = false
   toast.success('Two-factor authentication is on', 'You will be asked for a code at every sign-in.')
 }
-function cancelEnrol() { enrol.value = { step: -1, data: null, qr: '', code: '', codes: [], busy: false, error: '' } }
+function cancelEnrol() { enrol.value = blankEnrol() }
 
 // ---- disable 2FA (password prompt)
 const disable = ref({ open: false, password: '', busy: false, error: '' })
@@ -146,17 +155,21 @@ const tokenCols: ColumnDef<TokenInfo>[] = [
   { key: 'actions', label: '', sortable: false, noExport: true, align: 'right', width: '90px', required: true },
 ]
 const roleOptions = computed(() => ROLES.filter((r) => atLeast(session.role, r)).map((r) => ({ value: r, label: r })))
-const nt = ref({ open: false, name: '', role: '' as Role | '', ttl: '720', busy: false, error: '', secret: '', restrict: false, repos: [] as string[] })
-function openToken() { nt.value = { open: true, name: '', role: session.role, ttl: '720', busy: false, error: '', secret: '', restrict: false, repos: [] } }
+const nt = ref({ open: false, name: '', role: '' as Role | '', ttl: '720', busy: false, error: '', secret: '', restrict: false, repos: [] as string[], ask: false, password: '' })
+function openToken() { nt.value = { open: true, name: '', role: session.role, ttl: '720', busy: false, error: '', secret: '', restrict: false, repos: [], ask: false, password: '' } }
 async function createToken() {
   nt.value.busy = true
   nt.value.error = ''
   try {
-    const r = await gap.createToken({ name: nt.value.name.trim(), role: (nt.value.role || undefined) as Role | undefined, ttl_hours: Number(nt.value.ttl) || 0, repositories: nt.value.restrict ? nt.value.repos : undefined })
+    const r = await gap.createToken({ name: nt.value.name.trim(), role: (nt.value.role || undefined) as Role | undefined, ttl_hours: Number(nt.value.ttl) || 0, repositories: nt.value.restrict ? nt.value.repos : undefined, password: nt.value.ask && nt.value.password ? nt.value.password : undefined })
     nt.value.secret = r.token
+    nt.value.password = ''
     void tokens.refresh()
   } catch (e) {
-    nt.value.error = errorText(e)
+    if (needsPassword(e)) {
+      nt.value.ask = true
+      nt.value.error = nt.value.password ? passwordCheckError(e) : 'Your sign-in is older than 10 minutes: confirm your password to create a token.'
+    } else nt.value.error = e instanceof ApiError && (e.status === 401 || e.status === 429) ? passwordCheckError(e) : errorText(e)
   } finally {
     nt.value.busy = false
   }
@@ -218,7 +231,7 @@ async function revokeToken(t: TokenInfo) {
               </template>
               <template v-else>
                 <p class="txt">Protect your account with a time-based code from an authenticator app (any TOTP app works). Administrators should always use it.</p>
-                <div class="form-actions"><button type="button" class="btn btn-primary" data-testid="totp-enable" @click="startEnrol"><Icon name="smartphone" />Set up two-factor</button></div>
+                <div class="form-actions"><button type="button" class="btn btn-primary" data-testid="totp-enable" @click="startEnrol()"><Icon name="smartphone" />Set up two-factor</button></div>
               </template>
             </template>
 
@@ -226,17 +239,25 @@ async function revokeToken(t: TokenInfo) {
               <Stepper :steps="['Scan and confirm', 'Save recovery codes']" :current="enrol.step" />
               <div v-if="enrol.step === 0">
                 <div v-if="enrol.busy && !enrol.data" class="row"><Spinner /> Preparing…</div>
+                <form v-else-if="enrol.ask && !enrol.data" class="form-grid" data-testid="totp-password-form" @submit.prevent="startEnrol(enrol.password)">
+                  <FormField v-slot="f" label="Your password" :error="enrol.error"><PasswordInput :id="f.id" v-model="enrol.password" autocomplete="current-password" :invalid="f.invalid" data-testid="totp-password" /></FormField>
+                  <div class="form-actions">
+                    <button type="submit" class="btn btn-primary" :disabled="!enrol.password" data-testid="totp-password-continue">Continue</button>
+                    <button type="button" class="btn btn-ghost" @click="cancelEnrol">Cancel</button>
+                  </div>
+                </form>
                 <div v-else-if="enrol.data" class="enrol">
                   <div class="qr" role="img" aria-label="QR code for your authenticator app" v-html="enrol.qr" />
                   <div class="enrol-side">
                     <p class="txt">Scan the code with your authenticator app, or enter the key by hand.</p>
                     <CopyField :value="enrol.data.secret" label="Key" data-testid="totp-secret" />
                     <form class="form-grid" @submit.prevent="confirmEnrol">
+                      <FormField v-if="enrol.ask" v-slot="f" label="Your password"><PasswordInput :id="f.id" v-model="enrol.password" autocomplete="current-password" data-testid="totp-confirm-password" /></FormField>
                       <FormField v-slot="f" label="Code from the app" :error="enrol.error">
                         <input :id="f.id" ref="codeEl" v-model="enrol.code" class="input mono code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000" :aria-invalid="f.invalid" :aria-describedby="f.describedby" data-testid="totp-confirm-code" @input="enrol.code = enrol.code.replace(/\D/g, '')" />
                       </FormField>
                       <div class="form-actions">
-                        <button type="submit" class="btn btn-primary" :disabled="enrol.code.length !== 6 || enrol.busy" data-testid="totp-confirm"><Spinner v-if="enrol.busy" :size="13" />Confirm</button>
+                        <button type="submit" class="btn btn-primary" :disabled="enrol.code.length !== 6 || enrol.busy || (enrol.ask && !enrol.password)" data-testid="totp-confirm"><Spinner v-if="enrol.busy" :size="13" />Confirm</button>
                         <button type="button" class="btn btn-ghost" @click="cancelEnrol">Cancel</button>
                       </div>
                     </form>
@@ -306,7 +327,7 @@ async function revokeToken(t: TokenInfo) {
       <form v-else id="token-form" class="form-grid" @submit.prevent="createToken">
         <FormField v-slot="f" label="Name" hint="What uses it, e.g. “monitoring” or “ci-restore-test”."><input :id="f.id" v-model="nt.name" class="input" required data-testid="token-name" /></FormField>
         <FormField v-slot="f" label="Role" hint="At most your own role."><SelectInput :id="f.id" v-model="nt.role" :options="roleOptions" /></FormField>
-        <FormField v-slot="f" label="Expires after"><SelectInput :id="f.id" v-model="nt.ttl" :options="[{ value: '24', label: '1 day' }, { value: '168', label: '7 days' }, { value: '720', label: '30 days' }, { value: '2160', label: '90 days' }, { value: '8760', label: '1 year' }, { value: '0', label: 'Never' }]" /></FormField>
+        <FormField v-slot="f" label="Expires after"><SelectInput :id="f.id" v-model="nt.ttl" :options="[{ value: '24', label: '1 day' }, { value: '168', label: '7 days' }, { value: '720', label: '30 days' }, { value: '2160', label: '90 days' }, { value: '8760', label: '1 year (the longest)' }]" /></FormField>
         <fieldset class="tok-repos" data-testid="token-repos">
           <legend>Repositories</legend>
           <label><input v-model="nt.restrict" type="checkbox" data-testid="token-restrict" /> Only these repositories (the token then has no rights outside them, not even read-only settings)</label>
@@ -315,13 +336,14 @@ async function revokeToken(t: TokenInfo) {
             <p v-if="!nt.repos.length" class="txt small">Pick at least one repository.</p>
           </div>
         </fieldset>
+        <FormField v-if="nt.ask" v-slot="f" label="Your password" hint="Creating a token needs your password when you signed in more than 10 minutes ago."><PasswordInput :id="f.id" v-model="nt.password" autocomplete="current-password" data-testid="token-password" /></FormField>
         <p v-if="nt.error" class="err" role="alert">{{ nt.error }}</p>
       </form>
       <template #footer>
         <template v-if="nt.secret"><button type="button" class="btn btn-primary" @click="nt.open = false">Done</button></template>
         <template v-else>
           <button type="button" class="btn" @click="nt.open = false">Cancel</button>
-          <button type="submit" form="token-form" class="btn btn-primary" :disabled="!nt.name.trim() || nt.busy || (nt.restrict && !nt.repos.length)" data-testid="token-create"><Spinner v-if="nt.busy" :size="13" />Create token</button>
+          <button type="submit" form="token-form" class="btn btn-primary" :disabled="!nt.name.trim() || nt.busy || (nt.ask && !nt.password) || (nt.restrict && !nt.repos.length)" data-testid="token-create"><Spinner v-if="nt.busy" :size="13" />Create token</button>
         </template>
       </template>
     </Modal>

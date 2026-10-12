@@ -281,8 +281,18 @@ Benfica -> Cikarang <--pull-- Amsterdam            (initiator: Amsterdam)
   receives admin authority. Its credential is a client certificate of the peer's CA, renewed like a
   host's (20).
 - **Retention is independent.** Replication does not propagate deletions (no `remove-vanished` mode).
+- **What a `sync-write` peer is trusted with.** It can write snapshots into any group it syncs, with the
+  retention time it supplies (clamped to the receive time; a time more than a day before the timestamp in
+  the snapshot id is refused, a consistency check only, because the peer also chooses the id). Retention on
+  the receiving repository buckets by that time, so a compromised primary that holds a `sync-write`
+  certificate for the offsite repository can write junk snapshots dated into past periods and displace real
+  history at the offsite's next retention run. Replication therefore protects against loss of the primary,
+  not against a malicious primary. Run an offsite safely: keep its retention policy conservative (keep-all or
+  a long keep-daily/weekly/monthly window), run `prune` there only by hand after looking at what it would
+  remove (`--dry-run`), and never schedule retention that trusts peer-supplied times unattended; or, where a
+  30-day catch-up sync is not needed, treat the server-side receive time as the retention time.
 - PostgreSQL is not replicated. Datastores are authoritative for payload.
-- GC honours in-flight syncs: chunks received by a sync are pinned (a pin-only session per repository,
+- GC honours in-flight syncs: chunks received by a sync are pinned (a pin-only session per transfer, that is per job run,
   renewed by activity) until their snapshots commit, in addition to the grace period.
 - **Operational controls** (per job, in PostgreSQL): `verified-only`, `resync-corrupt` (repair
   destination snapshots that failed verification from a source copy that has not failed itself; the
@@ -691,6 +701,9 @@ except enrolment demands a client certificate signed by the server's private CA 
   take its own jobs; can never delete or alter history), **sync-read** and **sync-write** (peer servers,
   3.3). **The administrative authority never exists on a backed-up host.** A compromised host can fill the
   repository with junk but cannot erase history. This is the ransomware-resistance property.
+  The property holds for the `backup` scope. A `sync-write` peer is trusted more: it supplies the retention
+  time of what it writes (see 3.3, "What a `sync-write` peer is trusted with"), so it can displace history on
+  the repository it writes to once retention runs there.
 - **People** never use the agent API. They use the management API (12) with roles; administration over the
   network is possible for `admin` users and admin-role API tokens, never for a host certificate.
 

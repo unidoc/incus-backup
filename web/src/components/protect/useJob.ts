@@ -39,7 +39,7 @@ export function useJob(id: Ref<string | null | undefined>) {
     timer = setTimeout(load, live.state === 'live' ? 10_000 : 2_000)
   }
 
-  const off = bus.on('job', (d) => {
+  const off = bus.onVisible('job', (d) => {
     const e = d as JobEvent
     if (!id.value || (e.job_id !== id.value && !e.lagged)) return
     // apply the cheap fields at once, fetch the log and result right after
@@ -47,7 +47,7 @@ export function useJob(id: Ref<string | null | undefined>) {
     if (debounce) clearTimeout(debounce)
     debounce = setTimeout(load, 250)
   })
-  const offResync = bus.on('resync', () => { void load() })
+  const offResync = bus.onVisible('resync', () => { void load() })
 
   watch(id, () => { job.value = null; void load() }, { immediate: true })
   onBeforeUnmount(() => {

@@ -19,6 +19,7 @@ import { signInError } from '@/lib/authErrors'
 import { authn, ssoErrorText, type SignInOptions } from '@/api/sections/authn'
 import { getAssertion, unavailableReason, webauthnError } from '@/lib/webauthn'
 import { ApiError } from '@/api/client'
+import { safeNext } from '@/lib/safeNext'
 
 const route = useRoute()
 const router = useRouter()
@@ -36,7 +37,7 @@ const codeInput = ref<HTMLInputElement | null>(null)
 const options = ref<SignInOptions | null>(null)
 const optionsError = ref(false)
 const expired = computed(() => route.query.expired === '1' || session.expired)
-const next = computed(() => (typeof route.query.next === 'string' && route.query.next.startsWith('/') && !route.query.next.startsWith('//') ? route.query.next : '/'))
+const next = computed(() => safeNext(route.query.next))
 const ssoError = computed(() => (typeof route.query.sso_error === 'string' ? ssoErrorText(route.query.sso_error) : ''))
 const signedOut = computed(() => route.query.reason === 'signed_out')
 const localLogin = computed(() => options.value?.local_login ?? true)

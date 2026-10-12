@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/unidoc/incus-backup/internal/datastore"
 	"github.com/unidoc/incus-backup/internal/progress"
@@ -383,6 +384,16 @@ func (s *Service) DeleteGroup(ctx context.Context, repoName, group string, force
 	if err != nil {
 		return nil, err
 	}
+	// Hold the group's writer slot for the whole delete: a host cannot start a session into the group
+	// meanwhile (it would be told 200 for a commit the final sweep then removes). guard() is only the
+	// daemon lock.
+	sid, err := s.acquireWriter(ctx, repo.ID, group, "", nil, "", s.Now().Add(6*time.Hour))
+	if err != nil {
+		return nil, err
+	}
+	defer func() {
+		_, _ = s.DB.Pool().Exec(context.WithoutCancel(ctx), `UPDATE sessions SET state='committed' WHERE id=$1::uuid`, uuidFromHex(sid))
+	}()
 	res := &GroupDeleteResult{Group: group}
 	var project, name string
 	_ = s.DB.Pool().QueryRow(ctx, `SELECT project, name FROM storage_objects WHERE repository_id=$1 AND group_id=$2`, repo.ID, group).Scan(&project, &name)
@@ -425,13 +436,8 @@ func (s *Service) DeleteGroup(ctx context.Context, repoName, group string, force
 		progress.Logf(ctx, progress.Info, "deleted snapshot %s", in.Snapshot)
 	}
 	// group-level files (notes) and anything left under the group
-	b := st.Backend()
-	var rest []string
-	_ = b.List("groups/"+group+"/", func(k string, _ datastore.Info) error { rest = append(rest, k); return nil })
-	for _, k := range rest {
-		if err := b.Delete(k); err != nil {
-			return res, fmt.Errorf("deleting %s: %w", k, err)
-		}
+	if err := st.PurgeGroup(group); err != nil {
+		return res, err
 	}
 	p := s.DB.Pool()
 	_, _ = p.Exec(ctx, `DELETE FROM snapshots WHERE repository_id=$1 AND group_id=$2`, repo.ID, group)

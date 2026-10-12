@@ -36,6 +36,31 @@ describe('live events', () => {
     expect(got).toEqual([{ id: 1 }, '*job', '*job'])
   })
 
+  it('onVisible holds events while the tab is hidden and delivers one when it is visible again', () => {
+    let state: DocumentVisibilityState = 'hidden'
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => state)
+    const b = new EventBus()
+    const got: unknown[] = []
+    const off = b.onVisible('job', (d) => got.push(d))
+    b.emit({ type: 'job', data: 1 })
+    b.emit({ type: 'job', data: 2 })
+    expect(got).toEqual([]) // hidden: no refetch, so no activity for the server
+    state = 'visible'
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(got).toEqual([2]) // one catch-up with the latest
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(got).toEqual([2])
+    b.emit({ type: 'job', data: 3 })
+    expect(got).toEqual([2, 3]) // visible: immediate
+    off()
+    state = 'hidden'
+    b.emit({ type: 'job', data: 4 })
+    state = 'visible'
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(got).toEqual([2, 3]) // unsubscribed
+    vi.restoreAllMocks()
+  })
+
   it('parses the server envelope, reconnects with backoff and emits resync after a reconnect', async () => {
     vi.useFakeTimers()
     const seen: unknown[] = []

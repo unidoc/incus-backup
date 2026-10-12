@@ -37,3 +37,8 @@ export function passwordCheckError(e: unknown): string {
   }
   return e instanceof Error ? e.message : String(e)
 }
+
+/** True when the server wants the password again (sign-in older than 10 minutes): 400 with password_required. */
+export function needsPassword(e: unknown): boolean {
+  return e instanceof ApiError && e.status === 400 && !!(e.body as { password_required?: boolean } | null)?.password_required
+}

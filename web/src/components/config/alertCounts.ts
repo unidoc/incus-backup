@@ -45,8 +45,8 @@ export function refreshAlertCounts(delay = 400) {
 export function startAlertCounts() {
   if (started) return
   started = true
-  bus.on('alert', () => refreshAlertCounts())
-  bus.on('resync', () => refreshAlertCounts())
+  bus.onVisible('alert', () => refreshAlertCounts())
+  bus.onVisible('resync', () => refreshAlertCounts())
   setInterval(() => { if (document.visibilityState === 'visible') void refresh() }, 60_000)
   watch(() => session.status, (s) => {
     if (s === 'authenticated') void refresh()

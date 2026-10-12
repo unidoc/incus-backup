@@ -53,6 +53,7 @@ jobs:
             paths-ignore:
               - internal/server/webui/dist
               - web-crypto/wasm
+              - web/e2e
               - "**/node_modules"
       - if: matrix.language == 'go'
         name: Build (linux/amd64 and the js/wasm module)

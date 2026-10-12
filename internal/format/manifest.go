@@ -156,6 +156,18 @@ func NewSnapshotID(t time.Time, r io.Reader) (string, error) {
 	return t.Format("20060102150405") + "-" + hex.EncodeToString(b[:]), nil
 }
 
+// SnapshotIDTime returns the (UTC, whole-second) time a snapshot id was created at.
+func SnapshotIDTime(s string) (time.Time, error) {
+	if !ValidSnapshotID(s) {
+		return time.Time{}, fmt.Errorf("invalid snapshot id %q", s)
+	}
+	t, err := time.ParseInLocation("20060102150405", s[:14], time.UTC)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("invalid snapshot id %q: %w", s, err)
+	}
+	return t, nil
+}
+
 // ValidSnapshotID reports whether s looks like an id from NewSnapshotID.
 func ValidSnapshotID(s string) bool {
 	if len(s) != 14+1+8 || s[14] != '-' {

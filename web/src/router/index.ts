@@ -1,6 +1,7 @@
 import { createRouter, createWebHistory } from 'vue-router'
 import { routes } from './routes'
 import { session, initSession, hasRole } from '@/stores/session'
+import { safeNext } from '@/lib/safeNext'
 
 export const router = createRouter({
   history: createWebHistory(),
@@ -18,7 +19,7 @@ router.beforeEach(async (to) => {
   if (to.name === 'setup') return session.status === 'authenticated' ? { name: 'dashboard' } : { name: 'login' }
   if (to.meta.public) {
     if (to.name === 'login' && session.status === 'authenticated') {
-      const next = typeof to.query.next === 'string' && to.query.next.startsWith('/') ? to.query.next : '/'
+      const next = safeNext(to.query.next)
       return next
     }
     return true

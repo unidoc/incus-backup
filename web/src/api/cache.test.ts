@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 import { defineComponent, h, nextTick } from 'vue'
 import { mount, flushPromises } from '@vue/test-utils'
+import { bus } from './events'
 import { clearCache, fetchCached, invalidate, useResource } from './cache'
 
 describe('cache', () => {
@@ -57,5 +58,38 @@ describe('cache', () => {
     invalidate('e')
     await flushPromises()
     expect(w.text()).toBe('ok|offline')
+  })
+})
+
+describe('useResource and hidden tabs', () => {
+  it('does not refetch on a live event while the tab is hidden, and refetches once when it is visible again', async () => {
+    clearCache()
+    vi.useFakeTimers()
+    let state: DocumentVisibilityState = 'hidden'
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => state)
+    const fetcher = vi.fn(async () => 1)
+    const C = defineComponent({
+      setup() {
+        useResource(() => 'hidden-tab', fetcher, { ttl: 0, refreshOn: ['job'] })
+        return () => h('span')
+      },
+    })
+    const w = mount(C)
+    await vi.advanceTimersByTimeAsync(10)
+    expect(fetcher).toHaveBeenCalledTimes(1) // the first load
+    bus.emit({ type: 'job', data: null })
+    bus.emit({ type: 'resync', data: null })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(fetcher).toHaveBeenCalledTimes(1) // hidden: nothing sent, the session is not renewed
+    state = 'visible'
+    document.dispatchEvent(new Event('visibilitychange'))
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(fetcher).toHaveBeenCalledTimes(2) // one catch-up
+    bus.emit({ type: 'job', data: null })
+    await vi.advanceTimersByTimeAsync(1000)
+    expect(fetcher).toHaveBeenCalledTimes(3) // visible: events refetch as before
+    w.unmount()
+    vi.useRealTimers()
+    vi.restoreAllMocks()
   })
 })

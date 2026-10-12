@@ -14,6 +14,10 @@ const (
 // Header carrying the key-domain id (non-secret) on session creation.
 const HeaderDomain = "X-Incus-Backup-Domain"
 
+// HeaderSyncTransfer carries an opaque id of one synchronisation transfer (one job run): the receiving
+// server keeps one chunk pin per transfer, so two concurrent transfers cannot unpin each other's chunks.
+const HeaderSyncTransfer = "X-Incus-Backup-Sync-Transfer"
+
 // Whoami is GET /v1/whoami.
 type Whoami struct {
 	Host       string    `json:"host"`

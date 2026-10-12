@@ -5,7 +5,9 @@ package remote
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -45,6 +47,20 @@ type Client struct {
 
 	mu      sync.RWMutex
 	certPEM []byte
+
+	xferOnce sync.Once
+	xfer     string
+}
+
+// transferID is the random id this client (one job run) sends with its sync writes, so the receiving
+// server keeps a separate chunk pin for every concurrent transfer.
+func (c *Client) transferID() string {
+	c.xferOnce.Do(func() {
+		var b [12]byte
+		_, _ = rand.Read(b[:])
+		c.xfer = hex.EncodeToString(b[:])
+	})
+	return c.xfer
 }
 
 func (c *Client) httpClient() *http.Client {
@@ -217,6 +233,9 @@ func (c *Client) doOnce(ctx context.Context, method, path string, body io.Reader
 	for k, v := range hdr {
 		req.Header.Set(k, v)
 	}
+	if method != "GET" && strings.HasPrefix(path, "/v1/sync/") {
+		req.Header.Set(api.HeaderSyncTransfer, c.transferID())
+	}
 	resp, err := c.httpClient().Do(req)
 	if err != nil {
 		return err
@@ -296,22 +315,22 @@ func (c *Client) PutInventory(ctx context.Context, inv api.Inventory) error {
 // Snapshots lists committed snapshots of a group (oldest first).
 func (c *Client) Snapshots(ctx context.Context, group string) (*api.SnapshotList, error) {
 	var l api.SnapshotList
-	return &l, retry(ctx, func() error { return c.do(ctx, "GET", "/v1/groups/"+group+"/snapshots", nil, &l, nil) })
+	return &l, retry(ctx, func() error { return c.do(ctx, "GET", "/v1/groups/"+url.PathEscape(group)+"/snapshots", nil, &l, nil) })
 }
 
 // Index fetches a snapshot's index file.
 func (c *Client) Index(ctx context.Context, group, snap string) ([]byte, error) {
-	return c.get(ctx, "/v1/groups/"+group+"/snapshots/"+snap+"/index")
+	return c.get(ctx, "/v1/groups/"+url.PathEscape(group)+"/snapshots/"+url.PathEscape(snap)+"/index")
 }
 
 // Manifest fetches a snapshot's encrypted manifest.
 func (c *Client) Manifest(ctx context.Context, group, snap string) ([]byte, error) {
-	return c.get(ctx, "/v1/groups/"+group+"/snapshots/"+snap+"/manifest")
+	return c.get(ctx, "/v1/groups/"+url.PathEscape(group)+"/snapshots/"+url.PathEscape(snap)+"/manifest")
 }
 
 // Chunk fetches one chunk blob.
 func (c *Client) Chunk(ctx context.Context, id string) ([]byte, error) {
-	return c.get(ctx, "/v1/chunks/"+id)
+	return c.get(ctx, "/v1/chunks/"+url.PathEscape(id))
 }
 
 // Session is an open upload session on the server.
@@ -334,14 +353,14 @@ func (c *Client) Begin(ctx context.Context, req api.SessionRequest) (*Session, e
 
 // Heartbeat renews the session's lease without doing anything else.
 func (s *Session) Heartbeat(ctx context.Context) error {
-	return s.c.do(ctx, "POST", "/v1/sessions/"+s.ID+"/heartbeat", nil, nil, nil)
+	return s.c.do(ctx, "POST", "/v1/sessions/"+url.PathEscape(s.ID)+"/heartbeat", nil, nil, nil)
 }
 
 // Missing asks which ids the server lacks.
 func (s *Session) Missing(ctx context.Context, ids []string) ([]string, error) {
 	var out api.MissingResponse
 	err := retry(ctx, func() error {
-		return s.c.do(ctx, "POST", "/v1/sessions/"+s.ID+"/missing", api.MissingRequest{IDs: ids}, &out, nil)
+		return s.c.do(ctx, "POST", "/v1/sessions/"+url.PathEscape(s.ID)+"/missing", api.MissingRequest{IDs: ids}, &out, nil)
 	})
 	return out.Missing, err
 }
@@ -349,21 +368,21 @@ func (s *Session) Missing(ctx context.Context, ids []string) ([]string, error) {
 // PutChunk uploads one blob (idempotent, retried).
 func (s *Session) PutChunk(ctx context.Context, id string, blob []byte) error {
 	return retry(ctx, func() error {
-		return s.c.doRaw(ctx, "PUT", "/v1/sessions/"+s.ID+"/chunks/"+id, bytes.NewReader(blob), "application/octet-stream", nil, nil, nil)
+		return s.c.doRaw(ctx, "PUT", "/v1/sessions/"+url.PathEscape(s.ID)+"/chunks/"+url.PathEscape(id), bytes.NewReader(blob), "application/octet-stream", nil, nil, nil)
 	})
 }
 
 // PutIndex uploads the index file.
 func (s *Session) PutIndex(ctx context.Context, b []byte) error {
 	return retry(ctx, func() error {
-		return s.c.doRaw(ctx, "PUT", "/v1/sessions/"+s.ID+"/index", bytes.NewReader(b), "application/octet-stream", nil, nil, nil)
+		return s.c.doRaw(ctx, "PUT", "/v1/sessions/"+url.PathEscape(s.ID)+"/index", bytes.NewReader(b), "application/octet-stream", nil, nil, nil)
 	})
 }
 
 // PutManifest uploads the encrypted manifest.
 func (s *Session) PutManifest(ctx context.Context, b []byte) error {
 	return retry(ctx, func() error {
-		return s.c.doRaw(ctx, "PUT", "/v1/sessions/"+s.ID+"/manifest", bytes.NewReader(b), "application/octet-stream", nil, nil, nil)
+		return s.c.doRaw(ctx, "PUT", "/v1/sessions/"+url.PathEscape(s.ID)+"/manifest", bytes.NewReader(b), "application/octet-stream", nil, nil, nil)
 	})
 }
 
@@ -371,12 +390,12 @@ func (s *Session) PutManifest(ctx context.Context, b []byte) error {
 // a lost response would see a conflict, which the caller resolves by listing.
 func (s *Session) Commit(ctx context.Context, cr api.CommitRequest) (*api.CommitResponse, error) {
 	var r api.CommitResponse
-	return &r, s.c.do(ctx, "POST", "/v1/sessions/"+s.ID+"/commit", cr, &r, nil)
+	return &r, s.c.do(ctx, "POST", "/v1/sessions/"+url.PathEscape(s.ID)+"/commit", cr, &r, nil)
 }
 
 // Abort discards the session.
 func (s *Session) Abort(ctx context.Context) error {
-	return s.c.do(ctx, "DELETE", "/v1/sessions/"+s.ID, nil, nil, nil)
+	return s.c.do(ctx, "DELETE", "/v1/sessions/"+url.PathEscape(s.ID), nil, nil, nil)
 }
 
 // StartRun records the start of a run.
@@ -388,7 +407,7 @@ func (c *Client) StartRun(ctx context.Context, r api.RunStart) (string, error) {
 
 // FinishRun records the end of a run.
 func (c *Client) FinishRun(ctx context.Context, id string, f api.RunFinish) error {
-	return c.do(ctx, "POST", "/v1/runs/"+id+"/finish", f, nil, nil)
+	return c.do(ctx, "POST", "/v1/runs/"+url.PathEscape(id)+"/finish", f, nil, nil)
 }
 
 // ---- server-to-server synchronisation ---------------------------------------
@@ -412,14 +431,14 @@ func (c *Client) SyncMissing(ctx context.Context, ids []string) ([]string, error
 // SyncPutChunk uploads one blob to a destination.
 func (c *Client) SyncPutChunk(ctx context.Context, id string, blob []byte) error {
 	return retry(ctx, func() error {
-		return c.doRaw(ctx, "PUT", "/v1/sync/chunks/"+id, bytes.NewReader(blob), "application/octet-stream", nil, nil, nil)
+		return c.doRaw(ctx, "PUT", "/v1/sync/chunks/"+url.PathEscape(id), bytes.NewReader(blob), "application/octet-stream", nil, nil, nil)
 	})
 }
 
 // SyncPutSnapshot commits a snapshot on a destination.
 func (c *Client) SyncPutSnapshot(ctx context.Context, domain string, put api.SyncSnapshotPut) error {
 	return retry(ctx, func() error {
-		return c.do(ctx, "PUT", "/v1/sync/snapshots/"+put.Meta.GroupID+"/"+put.Meta.SnapshotID, put, nil, map[string]string{api.HeaderDomain: domain})
+		return c.do(ctx, "PUT", "/v1/sync/snapshots/"+url.PathEscape(put.Meta.GroupID)+"/"+url.PathEscape(put.Meta.SnapshotID), put, nil, map[string]string{api.HeaderDomain: domain})
 	})
 }
 

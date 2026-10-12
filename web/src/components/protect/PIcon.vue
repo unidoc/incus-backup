@@ -21,14 +21,14 @@ import iRotateCcw from 'lucide-static/icons/rotate-ccw.svg?raw'
 import iFileLock from 'lucide-static/icons/file-lock.svg?raw'
 import iPackageOpen from 'lucide-static/icons/package-open.svg?raw'
 import iBan from 'lucide-static/icons/ban.svg?raw'
+import { svgInner } from '../icons/svgInner'
 
 const rawExtra = {
   link: iLink, 'file-text': iFileText, image: iImage, 'file-archive': iFileArchive, 'folder-open': iFolderOpen, key: iKey, 'list-tree': iListTree,
   'arrow-left': iArrowLeft, upload: iUpload, 'file-search': iFileSearch, 'hard-drive-download': iHardDriveDownload, 'shield-x': iShieldX,
   'shield-question': iShieldQuestion, timer: iTimer, 'rotate-ccw': iRotateCcw, 'file-lock': iFileLock, 'package-open': iPackageOpen, ban: iBan,
 } as const
-const strip = (v: string) => v.replace(/<!--[\s\S]*?-->/g, '').replace(/^[\s\S]*?<svg[^>]*>/, '').replace(/<\/svg>\s*$/, '').trim()
-const extra: Record<string, string> = Object.fromEntries(Object.entries(rawExtra).map(([k, v]) => [k, strip(v)]))
+const extra: Record<string, string> = Object.fromEntries(Object.entries(rawExtra).map(([k, v]) => [k, svgInner(v)]))
 type PIconName = IconName | keyof typeof rawExtra
 
 const props = withDefaults(defineProps<{ name: PIconName; size?: number; stroke?: number; label?: string }>(), { size: 16, stroke: 1.75 })

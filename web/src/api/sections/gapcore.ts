@@ -1,7 +1,7 @@
 // Repository access (per-repository roles), traffic control and the OpenAPI document.
 // Sources: internal/server/auth/scopes.go, internal/server/mgmt/scope.go, routes_traffic.go, openapi.go;
 // docs/permissions.md, docs/traffic.md, docs/api.md.
-import { http, seg } from '../client'
+import { http, seg, passwordChecked } from '../client'
 import type { RFC3339, Role, TokenInfo } from '../types'
 
 type Sig = AbortSignal | undefined
@@ -19,7 +19,7 @@ export interface UserAccess { global_role: GlobalRole; scoped: boolean; scopes: 
 export interface SessionAccess { global: GlobalRole; repositories: Record<string, Role> | null }
 
 /** POST /me/tokens with an optional repository restriction. */
-export interface ScopedTokenRequest { name: string; role?: Role; ttl_hours?: number; repositories?: string[] }
+export interface ScopedTokenRequest { name: string; role?: Role; ttl_hours?: number; repositories?: string[]; password?: string }
 export interface ScopedTokenResponse { token: string; info: TokenInfo & { repositories: string[] | null }; note: string }
 
 /** traffic.Rule */
@@ -61,7 +61,7 @@ export const gap = {
     set: (user: string, scoped: boolean, scopes: RepoRole[]) => http.put<UserAccess>(`/users/${seg(user)}/access`, { scoped, scopes }),
     setGlobalRole: (user: string, role: GlobalRole) => http.put<void>(`/users/${seg(user)}`, { role }),
   },
-  createToken: (b: ScopedTokenRequest) => http.post<ScopedTokenResponse>('/me/tokens', b),
+  createToken: (b: ScopedTokenRequest) => passwordChecked(() => http.post<ScopedTokenResponse>('/me/tokens', b, { noAuthRedirect: true })),
   traffic: {
     rules: (signal?: Sig) => http.get<TrafficRule[] | null>('/traffic/rules', { signal }),
     create: (r: TrafficRuleInput) => http.post<TrafficRule>('/traffic/rules', r),

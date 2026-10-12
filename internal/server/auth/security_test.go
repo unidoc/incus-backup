@@ -3,8 +3,10 @@ package auth_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"github.com/unidoc/incus-backup/internal/server/auth"
 )
@@ -58,5 +60,70 @@ func TestPasswordRecheckFailuresLockTheAccount(t *testing.T) {
 	}
 	if _, err := e.Login(ctx, "eve", pw, "", "", ""); err != nil {
 		t.Fatalf("login after the lock: %v", err)
+	}
+}
+
+// Lockout must not tell whether a name exists (review F11): an unknown name and a single sign-on account
+// answer 401 five times and then 429, like a real account, and unlock on the same schedule.
+func TestLockoutIsTheSameForUnknownNames(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	if _, err := e.CreateUser(ctx, "real", pw, auth.ReadOnly, "", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.CreateUser(ctx, "sso", pw, auth.ReadOnly, "", "", false); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := e.Pool.Exec(ctx, `UPDATE users SET password_hash='' WHERE name='sso'`); err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"real", "nobody", "NoBody2", "sso"} {
+		for i := 0; i < 5; i++ {
+			if _, err := e.Login(ctx, name, "wrong guess number "+name, "", "", ""); !errors.Is(err, auth.ErrInvalidCredentials) {
+				t.Fatalf("%s guess %d: %v", name, i, err)
+			}
+		}
+		if _, err := e.Login(ctx, name, "wrong guess number "+name, "", "", ""); !errors.Is(err, auth.ErrLocked) {
+			t.Fatalf("%s after five failures: %v, want ErrLocked", name, err)
+		}
+		if _, err := e.Login(ctx, strings.ToUpper(name), pw, "", "", ""); !errors.Is(err, auth.ErrLocked) {
+			t.Fatalf("%s (other case) while locked: %v", name, err)
+		}
+	}
+	e.now = e.now.Add(auth.IdleTimeout) // past the first lock
+	if _, err := e.Login(ctx, "nobody", "wrong", "", "", ""); !errors.Is(err, auth.ErrInvalidCredentials) {
+		t.Fatalf("an unknown name unlocks after the interval: %v", err)
+	}
+	if _, err := e.Login(ctx, "real", pw, "", "", ""); err != nil {
+		t.Fatalf("the real account unlocks: %v", err)
+	}
+}
+
+// API tokens always expire, never outlive MaxTokenTTL, and a user without a local password gets none
+// (review F8).
+func TestTokenLifetimeAndSSOOnlyRule(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	if _, err := e.CreateUser(ctx, "anna", pw, auth.Admin, "", "", false); err != nil {
+		t.Fatal(err)
+	}
+	_, ti, err := e.CreateToken(ctx, "anna", "default", auth.ReadOnly, 0)
+	if err != nil || ti.Expires == nil || !ti.Expires.Equal(e.now.Add(auth.DefaultTokenTTL)) {
+		t.Fatalf("zero ttl: %v %+v", err, ti)
+	}
+	if _, ti, err = e.CreateToken(ctx, "anna", "max", auth.ReadOnly, auth.MaxTokenTTL); err != nil || ti.Expires == nil {
+		t.Fatalf("max ttl: %v", err)
+	}
+	if _, _, err = e.CreateToken(ctx, "anna", "long", auth.ReadOnly, auth.MaxTokenTTL+time.Second); !errors.Is(err, auth.ErrBad) {
+		t.Fatalf("over the maximum: %v", err)
+	}
+	if _, err := e.Pool.Exec(ctx, `UPDATE users SET password_hash='' WHERE name='anna'`); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err = e.CreateToken(ctx, "anna", "sso", auth.ReadOnly, time.Hour); !errors.Is(err, auth.ErrBad) {
+		t.Fatalf("SSO-only user: %v", err)
+	}
+	if _, err := e.BeginTOTP(ctx, "anna"); !errors.Is(err, auth.ErrBad) {
+		t.Fatalf("SSO-only user TOTP: %v", err)
 	}
 }

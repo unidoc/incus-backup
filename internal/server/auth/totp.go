@@ -86,6 +86,10 @@ type TOTPEnrolment struct {
 // BeginTOTP generates a new seed for a user. It is stored sealed but not active until ConfirmTOTP proves the
 // user's app produces matching codes.
 func (s *Store) BeginTOTP(ctx context.Context, name string) (*TOTPEnrolment, error) {
+	var has bool
+	if err := s.Pool.QueryRow(ctx, `SELECT password_hash <> '' FROM users WHERE lower(name)=lower($1)`, name).Scan(&has); err == nil && !has {
+		return nil, fmt.Errorf("%w: %v; its second factor is the identity provider's", ErrBad, ErrNoLocalPassword)
+	}
 	secret := make([]byte, 20)
 	if _, err := rand.Read(secret); err != nil {
 		return nil, err

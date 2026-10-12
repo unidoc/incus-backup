@@ -2,7 +2,7 @@
 // Routes marked R act on the repository chosen in the top bar (the client adds ?repository=).
 // Planned routes (alerts, jobs, restore tests, certificates, notifications) are in `draft`: their
 // shapes follow docs/api.md and may change when the backend lands; a 404 from them means "not yet".
-import { ApiError, http, seg, request } from './client'
+import { ApiError, http, seg, request, passwordChecked as pwChecked } from './client'
 import type * as T from './types'
 
 type Sig = AbortSignal | undefined
@@ -48,8 +48,8 @@ export const api = {
   },
   me: {
     changePassword: (b: T.ChangePasswordRequest) => passwordChecked(() => http.post<void>('/me/password', b, { noAuthRedirect: true })),
-    beginTOTP: () => http.post<T.TOTPEnrolment>('/me/totp'),
-    confirmTOTP: (b: T.ConfirmTOTPRequest) => http.post<T.ConfirmTOTPResponse>('/me/totp/confirm', b),
+    beginTOTP: (password?: string) => pwChecked(() => http.post<T.TOTPEnrolment>('/me/totp', password ? { password } : {}, { noAuthRedirect: true })),
+    confirmTOTP: (b: T.ConfirmTOTPRequest) => pwChecked(() => http.post<T.ConfirmTOTPResponse>('/me/totp/confirm', b, { noAuthRedirect: true })),
     disableTOTP: (b: T.DisableTOTPRequest) => passwordChecked(() => http.del<void>('/me/totp', b, { noAuthRedirect: true })),
     sessions: (signal?: Sig) => http.get<T.SessionInfo[]>('/me/sessions', { signal }),
     revokeSession: (id: string) => http.del<void>(`/me/sessions/${seg(id)}`),

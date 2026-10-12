@@ -225,7 +225,7 @@ func (s *Server) authn(next http.Handler, pattern string) http.Handler {
 			if bearer {
 				_, err = s.Auth.AuthenticateToken(c, strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer "))
 			} else if ck, cerr := r.Cookie(cookieName); cerr == nil {
-				_, err = s.Auth.Authenticate(c, ck.Value)
+				_, err = s.Auth.Recheck(c, ck.Value) // not activity: an open stream must not renew the idle timeout
 			} else {
 				err = auth.ErrNoSession
 			}

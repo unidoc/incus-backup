@@ -203,6 +203,27 @@ func DefaultArgon2() Argon2Params {
 	return Argon2Params{Time: 3, MemKiB: 64 * 1024, Threads: 4}
 }
 
+// Bounds for stored Argon2id parameters: a damaged or hostile key file must produce an error, never a
+// panic (Time or Threads of 0) or a multi-gigabyte allocation. The default is 3 passes, 64 MiB, 4 lanes.
+const (
+	maxArgon2Time    = 64
+	maxArgon2MemKiB  = 1 << 20 // 1 GiB
+	maxArgon2Threads = 64
+)
+
+func (p Argon2Params) validate() error {
+	if p.Time < 1 || p.Time > maxArgon2Time {
+		return fmt.Errorf("key file argon2 time %d out of range 1-%d", p.Time, maxArgon2Time)
+	}
+	if p.Threads < 1 || p.Threads > maxArgon2Threads {
+		return fmt.Errorf("key file argon2 threads %d out of range 1-%d", p.Threads, maxArgon2Threads)
+	}
+	if p.MemKiB < 8*uint32(p.Threads) || p.MemKiB > maxArgon2MemKiB {
+		return fmt.Errorf("key file argon2 memory %d KiB out of range %d-%d", p.MemKiB, 8*uint32(p.Threads), maxArgon2MemKiB)
+	}
+	return nil
+}
+
 func keyFileAAD(domainID string) []byte { return []byte("incus-backup keyfile v1|" + domainID) }
 
 // NewKeyFile wraps master. An empty passphrase produces an unprotected file
@@ -230,6 +251,9 @@ func NewKeyFile(master []byte, passphrase string, p Argon2Params, salt, nonce []
 		if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
 			return nil, err
 		}
+	}
+	if err := p.validate(); err != nil {
+		return nil, err
 	}
 	p.Salt = base64.StdEncoding.EncodeToString(salt)
 	kek := argon2.IDKey([]byte(passphrase), salt, p.Time, p.MemKiB, p.Threads, KeySize)
@@ -274,6 +298,9 @@ func (kf *KeyFile) Unwrap(passphrase string) ([]byte, error) {
 		if kf.Argon2 == nil {
 			return nil, errors.New("key file is missing argon2 parameters")
 		}
+		if err := kf.Argon2.validate(); err != nil {
+			return nil, err
+		}
 		if passphrase == "" {
 			return nil, errors.New("key file is passphrase protected: passphrase required")
 		}
@@ -284,6 +311,9 @@ func (kf *KeyFile) Unwrap(passphrase string) ([]byte, error) {
 		nonce, err := base64.StdEncoding.DecodeString(kf.Nonce)
 		if err != nil {
 			return nil, err
+		}
+		if len(nonce) != NonceSize { // aead.Open panics on any other length
+			return nil, fmt.Errorf("key file nonce is %d bytes, want %d", len(nonce), NonceSize)
 		}
 		ct, err := base64.StdEncoding.DecodeString(kf.Wrap)
 		if err != nil {

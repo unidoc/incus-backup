@@ -361,6 +361,42 @@ func (x *Session) Close() {
 	delete(x.s.open, x)
 }
 
+// PurgeGroup deletes everything left under a group (group-level files and leftovers of snapshot
+// directories). Each object of a snapshot directory is deleted under that directory's snapshot lock,
+// which a commit of the same snapshot holds while it writes, so a delete never splits a commit.
+func (s *Store) PurgeGroup(group string) error {
+	if !ValidGroup(group) {
+		return fmt.Errorf("%w: invalid group", ErrInvalid)
+	}
+	prefix := "groups/" + group + "/"
+	if err := s.at("group:before-purge"); err != nil {
+		return err
+	}
+	var keys []string
+	if err := s.b.List(prefix, func(k string, _ Info) error { keys = append(keys, k); return nil }); err != nil {
+		return err
+	}
+	for _, k := range keys {
+		var l *sync.Mutex
+		if i := strings.Index(strings.TrimPrefix(k, prefix), "/"); i > 0 {
+			if snap := strings.TrimPrefix(k, prefix)[:i]; format.ValidSnapshotID(snap) {
+				l = s.snapLock(group, snap)
+			}
+		}
+		if l != nil {
+			l.Lock()
+		}
+		err := s.b.Delete(k)
+		if l != nil {
+			l.Unlock()
+		}
+		if err != nil {
+			return fmt.Errorf("deleting %s: %w", k, err)
+		}
+	}
+	return nil
+}
+
 // ErrSessionClosed is returned by a session used after Close.
 var ErrSessionClosed = errors.New("session is closed")
 
@@ -500,6 +536,14 @@ func (x *Session) commit(source string, at time.Time) (*Receipt, error) {
 	if _, err := x.s.b.Stat(prefix + "commit.json"); err == nil {
 		return nil, ErrExists
 	}
+	x.mu.Lock()
+	if x.closed { // an abort raced the slow step 2 and dropped the pins: nothing may become visible
+		x.mu.Unlock()
+		return nil, ErrSessionClosed
+	}
+	// A later Close waits for the marker, then moves its pins to the GC shadow set if a GC started meanwhile.
+	// (A GC sweep batch that asks pinned() waits for these three writes too.)
+	defer x.mu.Unlock()
 	if err := x.s.b.Put(prefix+"index", x.index, false); err != nil {
 		return nil, err
 	}

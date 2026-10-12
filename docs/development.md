@@ -16,6 +16,10 @@ packaging details see [`packaging.md`](packaging.md). For validation on a real I
 | PostgreSQL 16 | embedded (downloaded by the tests) or any server | every control-plane test |
 | `shellcheck` | 0.9 or newer | `scripts/`, `packaging/` (CI's packaging job) |
 
+**Platform.** The client and the tests target Linux. `just test` does not compile on macOS: `internal/archive/archive.go` and
+`internal/fscat/scan.go` use the Linux `syscall.Stat_t` field types without a build tag. Develop in a Linux container or VM
+(the Alpine package and the Incus host are Linux anyway).
+
 **MinIO.** MinIO no longer publishes binaries (`dl.min.io` answers `410 Gone`) and the project is archived.
 Build the pinned version CI uses from source (module proxy and checksum database):
 

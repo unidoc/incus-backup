@@ -224,6 +224,9 @@ func (m *Manager) RunWith(ctx context.Context, repo *service.Repo, j *Job, rc *r
 	if err := m.Svc.DB.Pool().QueryRow(ctx, `INSERT INTO sync_runs (job_id, started_at) VALUES ($1,$2) RETURNING id`, j.ID, m.Svc.Now()).Scan(&runID); err != nil {
 		return nil, err
 	}
+	// one chunk pin per run on the writing side (snapshots of a run are transferred one after the other):
+	// a concurrent run into the same repository cannot unpin this run's chunks at its commit
+	ctx = service.WithSyncTransfer(ctx, "run/"+runID)
 	res, err := Run(ctx, src, dst, Options{
 		GroupFilter: j.GroupFilter, VerifiedOnly: j.VerifiedOnly, ResyncCorrupt: j.ResyncCorrupt, TransferLast: j.TransferLast, RateLimit: j.RateLimitBps,
 		OnState: func(g, s, st, e string) {

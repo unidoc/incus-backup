@@ -1,6 +1,7 @@
 package httpapi
 
 import (
+	"context"
 	"net/http"
 
 	"github.com/unidoc/incus-backup/internal/api"
@@ -50,7 +51,7 @@ func (s *Server) syncMissing(w http.ResponseWriter, r *http.Request, h *service.
 		s.badJSON(w, r, err)
 		return
 	}
-	m, err := s.Svc.SyncMissing(r.Context(), repo, req.IDs)
+	m, err := s.Svc.SyncMissing(syncCtx(r, h), repo, req.IDs)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -72,7 +73,7 @@ func (s *Server) syncPutChunk(w http.ResponseWriter, r *http.Request, h *service
 		s.badJSON(w, r, err)
 		return
 	}
-	if err := s.Svc.SyncPutChunk(r.Context(), repo, r.PathValue("id"), b); err != nil {
+	if err := s.Svc.SyncPutChunk(syncCtx(r, h), repo, r.PathValue("id"), b); err != nil {
 		s.fail(w, r, err)
 		return
 	}
@@ -94,9 +95,19 @@ func (s *Server) syncPutSnapshot(w http.ResponseWriter, r *http.Request, h *serv
 		return
 	}
 	put.Meta.GroupID, put.Meta.SnapshotID = r.PathValue("group"), r.PathValue("snap")
-	if err := s.Svc.SyncPutSnapshot(r.Context(), repo, r.Header.Get(api.HeaderDomain), put); err != nil {
+	if err := s.Svc.SyncPutSnapshot(syncCtx(r, h), repo, r.Header.Get(api.HeaderDomain), put); err != nil {
 		s.fail(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// syncCtx names the transfer a sync write belongs to: the calling host plus the id its client sends per
+// job run, so concurrent transfers into one repository keep separate chunk pins.
+func syncCtx(r *http.Request, h *service.Host) context.Context {
+	id := r.Header.Get(api.HeaderSyncTransfer)
+	if len(id) > 64 {
+		id = id[:64]
+	}
+	return service.WithSyncTransfer(r.Context(), h.ID+"/"+id)
 }

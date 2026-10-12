@@ -107,7 +107,7 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		code, msg = http.StatusNotFound, err.Error()
 	case errors.Is(err, service.ErrConflict):
 		code, msg = http.StatusConflict, err.Error()
-	case errors.Is(err, service.ErrBadRequest):
+	case errors.Is(err, service.ErrBadRequest), errors.Is(err, datastore.ErrInvalid):
 		code, msg = http.StatusBadRequest, err.Error()
 	case errors.Is(err, datastore.ErrReadOnly), errors.Is(err, datastore.ErrOffline):
 		code, msg = http.StatusServiceUnavailable, err.Error()

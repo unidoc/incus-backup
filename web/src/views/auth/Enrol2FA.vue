@@ -7,6 +7,7 @@ import { useRoute, useRouter } from 'vue-router'
 import QRCode from 'qrcode'
 import AuthLayout from '@/components/app/AuthLayout.vue'
 import FormField from '@/components/form/FormField.vue'
+import PasswordInput from '@/components/form/PasswordInput.vue'
 import Callout from '@/components/Callout.vue'
 import CopyField from '@/components/CopyField.vue'
 import Spinner from '@/components/Spinner.vue'
@@ -15,13 +16,16 @@ import SecurityKeys from '@/components/authn/SecurityKeys.vue'
 import { api } from '@/api/endpoints'
 import { session, refreshUser, logout } from '@/stores/session'
 import { errorText } from '@/stores/toast'
+import { ApiError } from '@/api/client'
+import { passwordCheckError, needsPassword } from '@/lib/authErrors'
+import { safeNext } from '@/lib/safeNext'
 import { useClipboard, downloadText } from '@/composables/useClipboard'
 import type { TOTPEnrolment } from '@/api/types'
 
 const route = useRoute()
 const router = useRouter()
 const mode = ref<'choose' | 'totp' | 'codes'>('choose')
-const next = computed(() => (typeof route.query.next === 'string' && route.query.next.startsWith('/') && !route.query.next.startsWith('//') ? route.query.next : '/'))
+const next = computed(() => safeNext(route.query.next))
 
 async function finished() {
   await refreshUser()
@@ -29,28 +33,40 @@ async function finished() {
 }
 
 // ---- authenticator app
-const t = ref<{ data: TOTPEnrolment | null; qr: string; code: string; busy: boolean; error: string; codes: string[] }>({ data: null, qr: '', code: '', busy: false, error: '', codes: [] })
+// ask: the sign-in is older than 10 minutes, so the server wants the password again
+type TState = { data: TOTPEnrolment | null; qr: string; code: string; busy: boolean; error: string; codes: string[]; ask: boolean; password: string }
+const blankT = (): TState => ({ data: null, qr: '', code: '', busy: false, error: '', codes: [], ask: false, password: '' })
+const t = ref<TState>(blankT())
+const askText = 'Your sign-in is older than 10 minutes: confirm your password to set up two-factor authentication.'
+const pwFailed = (e: unknown) => e instanceof ApiError && (e.status === 401 || e.status === 429)
 const codeEl = ref<HTMLInputElement | null>(null)
-async function startTOTP() {
+async function startTOTP(password?: string) {
   mode.value = 'totp'
-  t.value = { data: null, qr: '', code: '', busy: true, error: '', codes: [] }
+  t.value = { ...blankT(), busy: true, ask: t.value.ask, password: password ?? '' }
   try {
-    const d = await api.me.beginTOTP()
+    const d = await api.me.beginTOTP(password || undefined)
     const qr = await QRCode.toString(d.uri, { type: 'svg', margin: 1, errorCorrectionLevel: 'M', color: { dark: '#0f1720', light: '#ffffff' } })
     t.value = { ...t.value, data: d, qr, busy: false }
     await nextTick()
     codeEl.value?.focus()
-  } catch (e) { t.value = { ...t.value, busy: false, error: errorText(e) } }
+  } catch (e) {
+    if (needsPassword(e)) t.value = { ...t.value, busy: false, ask: true, error: password ? passwordCheckError(e) : askText }
+    else t.value = { ...t.value, busy: false, error: pwFailed(e) ? passwordCheckError(e) : errorText(e) }
+  }
 }
 async function confirmTOTP() {
   if (t.value.code.length !== 6) return
   t.value.busy = true
   t.value.error = ''
   try {
-    const r = await api.me.confirmTOTP({ code: t.value.code })
-    t.value = { ...t.value, codes: r.recovery_codes, busy: false }
+    const r = await api.me.confirmTOTP({ code: t.value.code, password: t.value.ask && t.value.password ? t.value.password : undefined })
+    t.value = { ...t.value, codes: r.recovery_codes, busy: false, password: '' }
     mode.value = 'codes'
-  } catch (e) { t.value = { ...t.value, busy: false, code: '', error: `${errorText(e)}. Check the time on your phone and enter the current code.` } }
+  } catch (e) {
+    if (needsPassword(e)) t.value = { ...t.value, busy: false, ask: true, error: t.value.password ? passwordCheckError(e) : askText }
+    else if (pwFailed(e)) t.value = { ...t.value, busy: false, error: passwordCheckError(e) }
+    else t.value = { ...t.value, busy: false, code: '', error: `${errorText(e)}. Check the time on your phone and enter the current code.` }
+  }
 }
 const saved = ref(false)
 const { copy, copied } = useClipboard()
@@ -69,23 +85,31 @@ async function signOut() { await logout(); await router.replace({ name: 'login' 
       <section class="choice">
         <h2><Icon name="smartphone" />Authenticator app</h2>
         <p>A 6-digit code from an app on your phone (any TOTP app). You also get recovery codes.</p>
-        <div class="form-actions"><button type="button" class="btn" data-testid="enrol-totp" @click="startTOTP">Set up an authenticator app</button></div>
+        <div class="form-actions"><button type="button" class="btn" data-testid="enrol-totp" @click="startTOTP()">Set up an authenticator app</button></div>
       </section>
     </div>
 
     <div v-else-if="mode === 'totp'" class="totp">
       <div v-if="t.busy && !t.data" class="row"><Spinner /> Preparing</div>
+      <form v-else-if="t.ask && !t.data" class="form-grid" data-testid="totp-password-form" @submit.prevent="startTOTP(t.password)">
+        <FormField v-slot="f" label="Your password" :error="t.error"><PasswordInput :id="f.id" v-model="t.password" autocomplete="current-password" :invalid="f.invalid" data-testid="totp-password" /></FormField>
+        <div class="form-actions">
+          <button type="submit" class="btn btn-primary" :disabled="!t.password" data-testid="totp-password-continue">Continue</button>
+          <button type="button" class="btn btn-ghost" @click="mode = 'choose'">Back</button>
+        </div>
+      </form>
       <div v-else-if="t.data" class="enrol">
         <div class="qr" role="img" aria-label="QR code for your authenticator app" v-html="t.qr" />
         <div class="side">
           <p>Scan the code with your authenticator app, or enter the key by hand.</p>
           <CopyField :value="t.data.secret" label="Key" data-testid="totp-secret" />
           <form class="form-grid" @submit.prevent="confirmTOTP">
+            <FormField v-if="t.ask" v-slot="f" label="Your password"><PasswordInput :id="f.id" v-model="t.password" autocomplete="current-password" data-testid="totp-confirm-password" /></FormField>
             <FormField v-slot="f" label="Code from the app" :error="t.error">
               <input :id="f.id" ref="codeEl" v-model="t.code" class="input mono code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" placeholder="000000" data-testid="totp-confirm-code" @input="t.code = t.code.replace(/\D/g, '')" />
             </FormField>
             <div class="form-actions">
-              <button type="submit" class="btn btn-primary" :disabled="t.code.length !== 6 || t.busy" data-testid="totp-confirm"><Spinner v-if="t.busy" :size="13" />Confirm</button>
+              <button type="submit" class="btn btn-primary" :disabled="t.code.length !== 6 || t.busy || (t.ask && !t.password)" data-testid="totp-confirm"><Spinner v-if="t.busy" :size="13" />Confirm</button>
               <button type="button" class="btn btn-ghost" @click="mode = 'choose'">Back</button>
             </div>
           </form>

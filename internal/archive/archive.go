@@ -194,9 +194,14 @@ type ExtractOptions struct {
 	// ownership is never changed; MaxBytes bounds the total size.
 	Untrusted bool
 	MaxBytes  int64
+	// MaxEntries bounds the number of archive entries of an untrusted extraction (0 = DefaultMaxEntries).
+	MaxEntries int
 	// Report, if set, receives what was skipped.
 	Report *ExtractReport
 }
+
+// DefaultMaxEntries is the entry cap of an untrusted extraction when MaxEntries is 0.
+const DefaultMaxEntries = 1_000_000
 
 // ExtractReport counts what an untrusted extraction did.
 type ExtractReport struct {
@@ -286,6 +291,10 @@ func ExtractTar(tr *tar.Reader, dest string, o ExtractOptions) error {
 	if rep == nil {
 		rep = &ExtractReport{}
 	}
+	entries, maxEntries := 0, o.MaxEntries
+	if maxEntries <= 0 {
+		maxEntries = DefaultMaxEntries
+	}
 	apply := func(path string, hdr *tar.Header, link bool) error {
 		if fi, lerr := os.Lstat(path); lerr != nil || (!link && fi.Mode()&os.ModeSymlink != 0) {
 			return fmt.Errorf("%s is a symlink or vanished: refusing to apply metadata through it", path)
@@ -338,6 +347,13 @@ func ExtractTar(tr *tar.Reader, dest string, o ExtractOptions) error {
 			return fmt.Errorf("reading archive: %w", err)
 		}
 		if o.Untrusted {
+			entries++
+			if entries > maxEntries {
+				return fmt.Errorf("the recovered archive has more than %d entries", maxEntries)
+			}
+			if hdr.Size < 0 {
+				return fmt.Errorf("hostile archive entry %q has a negative size", hdr.Name)
+			}
 			if n := strings.Trim(hdr.Name, "/"); n == "" || n == "." {
 				return fmt.Errorf("hostile archive entry %q (it would change the destination itself)", hdr.Name)
 			}
@@ -373,16 +389,17 @@ func ExtractTar(tr *tar.Reader, dest string, o ExtractOptions) error {
 			dirs = append(dirs, dirFix{p, hdr})
 			rep.Dirs++
 		case tar.TypeReg:
+			// an entry larger than what is left of the budget is refused BEFORE anything is written: a PAX
+			// sparse entry is expanded by archive/tar into real zeros and reports its full size here
+			if o.Untrusted && o.MaxBytes > 0 && hdr.Size > o.MaxBytes-rep.Bytes {
+				return fmt.Errorf("the recovered data exceeds the limit of %d bytes", o.MaxBytes)
+			}
 			f, err := os.OpenFile(p, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 			if err != nil {
 				return err
 			}
 			var src io.Reader = tr
 			if o.Untrusted && o.MaxBytes > 0 {
-				if rep.Bytes+hdr.Size > o.MaxBytes {
-					f.Close()
-					return fmt.Errorf("the recovered data exceeds the limit of %d bytes", o.MaxBytes)
-				}
 				src = io.LimitReader(tr, hdr.Size)
 			}
 			n, err := io.Copy(f, src)

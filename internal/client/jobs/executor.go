@@ -710,7 +710,9 @@ func (x *Executor) guestFiles(ctx context.Context, r *jobRun, p jobspec.GuestFil
 	return x.withTemp(func(dir string) (any, error) {
 		r.logLine("info", fmt.Sprintf("recovering %d path(s) from %s/%s@%s through a disposable VM", len(p.Paths), p.Project, p.Object, orLatest(p.Snapshot)))
 		res, err := x.Eng.RestoreGuestFiles(ctx, engine.GuestFilesOptions{Server: r.target, Project: p.Project, Name: p.Object, Snapshot: p.Snapshot,
-			Paths: p.Paths, Partition: p.Partition, Dest: dir, Image: x.RecoveryImage, Pool: x.RecoveryPool, Memory: x.RecoveryMemory, CPU: x.RecoveryCPU})
+			Paths: p.Paths, Partition: p.Partition, Dest: dir, Image: x.RecoveryImage, Pool: x.RecoveryPool, Memory: x.RecoveryMemory, CPU: x.RecoveryCPU,
+			// the delivery is limited to this size anyway; never extract unbounded from a hostile guest filesystem
+			MaxBytes: jobspec.MaxDeliveryBytes})
 		if err != nil {
 			return nil, err
 		}

@@ -512,7 +512,8 @@ func (o *OIDC) oauthConfig(ctx context.Context, p *OIDCProvider, op *oidc.Provid
 
 // SafeNext keeps a post-sign-in destination on this site (a path, never another host).
 func SafeNext(next string) string {
-	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.HasPrefix(next, "/\\") || strings.HasPrefix(next, "/api/") || strings.ContainsAny(next, "\r\n") {
+	if !strings.HasPrefix(next, "/") || strings.HasPrefix(next, "//") || strings.HasPrefix(next, "/\\") || strings.HasPrefix(next, "/api/") ||
+		strings.IndexFunc(next, func(r rune) bool { return r < 0x20 || r == 0x7f }) >= 0 { // browsers drop tab/CR/LF before parsing a Location
 		return "/"
 	}
 	return next
