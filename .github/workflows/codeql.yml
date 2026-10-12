@@ -1,0 +1,68 @@
+name: CodeQL
+
+# Static analysis of the Go code and of the TypeScript/Vue sources (web/, web-crypto/), on pull
+# requests, on the default branch and weekly (new queries find old code). Not part of ci-ok:
+# findings appear under Security > Code scanning.
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.event_name }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  analyze:
+    name: CodeQL (${{ matrix.language }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - language: go
+            build-mode: manual
+          - language: javascript-typescript
+            build-mode: none
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - if: matrix.language == 'go'
+        uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - if: matrix.language == 'go'
+        uses: ./.github/actions/webui-dist
+      - uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          config: |
+            paths-ignore:
+              - internal/server/webui/dist
+              - web-crypto/wasm
+              - web/e2e
+              - "**/node_modules"
+      - if: matrix.language == 'go'
+        name: Build (linux/amd64 and the js/wasm module)
+        env:
+          CGO_ENABLED: "0"
+          GOTOOLCHAIN: local
+        run: |
+          go build ./...
+          GOOS=js GOARCH=wasm go build -o /dev/null ./cmd/ibwasm
+      - uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}

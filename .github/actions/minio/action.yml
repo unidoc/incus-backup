@@ -1,0 +1,36 @@
+name: MinIO server binary for the tests
+description: >
+  Puts a MinIO server binary at INCUS_BACKUP_TEST_MINIO (internal/s3test, internal/demo and the
+  e2e storage tests start it). MinIO no longer publishes binaries (dl.min.io answers 410 Gone) and
+  the project is archived, so it is built from source with `go install` (module proxy + checksum
+  database) at a pinned version, once, and cached. Needs actions/setup-go first.
+inputs:
+  version:
+    description: github.com/minio/minio module version
+    default: v0.0.0-20260212201848-7aac2a2c5b7c
+runs:
+  using: composite
+  steps:
+    - id: restore
+      uses: actions/cache/restore@v6
+      with:
+        path: ~/.cache/incus-backup-ci/minio
+        key: minio-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}
+    - if: steps.restore.outputs.cache-hit != 'true'
+      shell: bash
+      working-directory: ${{ runner.temp }}
+      env:
+        MINIO_VERSION: ${{ inputs.version }}
+      run: |
+        mkdir -p ~/.cache/incus-backup-ci/minio
+        CGO_ENABLED=0 GOFLAGS='' GOBIN="$HOME/.cache/incus-backup-ci/minio" go install "github.com/minio/minio@$MINIO_VERSION"
+    - if: steps.restore.outputs.cache-hit != 'true'
+      uses: actions/cache/save@v6
+      with:
+        path: ~/.cache/incus-backup-ci/minio
+        key: minio-${{ runner.os }}-${{ runner.arch }}-${{ inputs.version }}
+    - shell: bash
+      run: |
+        bin="$HOME/.cache/incus-backup-ci/minio/minio"
+        "$bin" --version
+        echo "INCUS_BACKUP_TEST_MINIO=$bin" >> "$GITHUB_ENV"

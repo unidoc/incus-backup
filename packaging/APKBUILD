@@ -1,0 +1,215 @@
+# Maintainer: UniDoc <ahall@unidoc.io>
+#
+# One source tarball, two programs:
+#   incus-backup         the client (runs on every Incus host, as root)
+#   incus-backup-server  the repository server (runs as the incus-backup user;
+#                        needs an external PostgreSQL, see below)
+# plus -openrc and -doc subpackages for each. The web UI is embedded in the
+# server binary (go:embed of internal/server/webui/dist), so there is no
+# separate -web package.
+#
+# Source: the RELEASE TARBALL (scripts/release.sh), not GitHub's
+# archive/refs/tags/... tarball the other unidoc-aports packages use. The
+# release tarball additionally carries vendor/ (every Go module) and the
+# BUILT web UI (internal/server/webui/dist), so this build needs neither
+# network (no options="net") nor node/npm in makedepends. A plain git
+# archive has neither and does not build offline.
+#
+# Static binaries: CGO_ENABLED=0. abuild's default GOFLAGS contain
+# -buildmode=pie, which with CGO disabled still yields a dynamically
+# loaded executable (checked: PT_INTERP /lib64/ld-linux-x86-64.so.2), so
+# build() sets GOFLAGS itself. The flags are the same as scripts/release.sh
+# uses, so with the same Go version the binaries in the apk are
+# byte-identical to the release binaries (checked by sha256 against the
+# release binaries; docs/packaging.md).
+#
+# PostgreSQL is NOT a dependency: it may live on another host, and the
+# client never needs it. `apk add postgresql` on the same host is the
+# documented single-box setup (docs/packaging.md).
+pkgname=incus-backup
+pkgver=0.1.0
+pkgrel=0
+pkgdesc="Encrypted, deduplicated, incremental backups for Incus VMs, containers and volumes"
+url="https://github.com/unidoc/incus-backup"
+arch="x86_64 aarch64"
+license="Apache-2.0"
+# go.mod pins the Go version (go 1.26.8). Alpine's go defaults to
+# GOTOOLCHAIN=local, so the build fails loudly if Alpine's go is older
+# than go.mod (it never silently downloads a toolchain); see
+# docs/packaging.md for the GOTOOLCHAIN=auto + options="net" escape hatch.
+makedepends="go"
+# The binaries embed the IANA zones (time/tzdata), but the retention tests
+# load Europe/Berlin from the system: found by the first real abuild run in
+# a bare Alpine root ("unknown time zone Europe/Berlin").
+checkdepends="tzdata"
+# !strip: the Go linker already strips (-s -w). abuild's extra strip
+# rewrites the ELF (verified: apk binary == `strip release-binary`), which
+# would make the packaged binaries differ from the signed release binaries;
+# without it they are byte-identical (docs/packaging.md).
+options="!strip"
+# The service user/group own /var/lib/incus-backup-server (0750) inside the
+# package, so abuild needs them at build time too.
+pkgusers="incus-backup"
+pkggroups="incus-backup"
+install="$pkgname.post-install
+	$pkgname.pre-deinstall
+	$pkgname-server.pre-install
+	$pkgname-server.post-install
+	$pkgname-server.post-upgrade
+	$pkgname-server.pre-deinstall
+	$pkgname-openrc.pre-deinstall
+	$pkgname-server-openrc.pre-deinstall
+	"
+# Order matters: the server functions amove their files out first, then
+# the default doc/openrc functions take what is left (the client's).
+subpackages="
+	$pkgname-server:server
+	$pkgname-server-doc:server_doc
+	$pkgname-server-openrc:server_openrc
+	$pkgname-server-bash-completion:server_bashcomp:noarch
+	$pkgname-doc
+	$pkgname-openrc
+	$pkgname-bash-completion
+	"
+source="https://github.com/unidoc/incus-backup/releases/download/v$pkgver/$pkgname-$pkgver.tar.gz
+	incus-backup.initd
+	incus-backup.confd
+	incus-backup.logrotate
+	incus-backup-server.initd
+	incus-backup-server.confd
+	incus-backup-server.logrotate
+	"
+builddir="$srcdir/$pkgname-$pkgver"
+
+# Keep in sync with scripts/release.sh (the reproducibility check compares
+# the results). -mod=vendor: offline, from the tarball's vendor/.
+_goflags="-trimpath -buildvcs=false -mod=vendor -modcacherw"
+
+build() {
+	export CGO_ENABLED=0
+	export GOFLAGS="$_goflags"
+	mkdir -p build
+	local b
+	for b in incus-backup incus-backup-server; do
+		go build -ldflags "-s -w -buildid= -X main.version=$pkgver" -o build/$b ./cmd/$b
+	done
+	# Man pages from the cobra command tree (hidden `man` command); dated
+	# by SOURCE_DATE_EPOCH, which abuild exports.
+	./build/incus-backup man build/man
+	./build/incus-backup-server man build/man
+	./build/incus-backup completion bash > build/incus-backup.bash
+	./build/incus-backup-server completion bash > build/incus-backup-server.bash
+}
+
+# check() runs the test packages that need neither PostgreSQL nor MinIO.
+# The rest (server, datastore S3 backend, client engine, CLIs) start
+# embedded-postgres, which DOWNLOADS a glibc PostgreSQL build at test time:
+# impossible offline in abuild and not runnable on musl anyway, and those
+# tests fail (never skip) without a database by project rule. They must be
+# run with `just test` against a real PostgreSQL + MinIO before a release is
+# tagged (no CI workflow enforces that yet; docs/packaging.md). Re-check this list when
+# packages are added: a package missing here is simply not tested by
+# abuild, it does not fail.
+check() {
+	export CGO_ENABLED=0
+	export GOFLAGS="$_goflags"
+	go test -count=1 \
+		./internal/archive \
+		./internal/chunker \
+		./internal/client/config \
+		./internal/client/incusx \
+		./internal/client/state \
+		./internal/format \
+		./internal/fscat \
+		./internal/nbd \
+		./internal/pki \
+		./internal/recovery \
+		./internal/retention \
+		./internal/schedule \
+		./internal/server/config
+}
+
+package() {
+	install -Dm755 build/incus-backup "$pkgdir"/usr/bin/incus-backup
+	install -Dm755 build/incus-backup-server "$pkgdir"/usr/bin/incus-backup-server
+
+	install -Dm644 build/incus-backup.bash \
+		"$pkgdir"/usr/share/bash-completion/completions/incus-backup
+	install -Dm644 build/incus-backup-server.bash \
+		"$pkgdir"/usr/share/bash-completion/completions/incus-backup-server
+
+	install -d "$pkgdir"/usr/share/man/man1
+	install -m644 build/man/*.1 "$pkgdir"/usr/share/man/man1/
+
+	local d
+	for d in incus-backup incus-backup-server; do
+		install -Dm644 README.md "$pkgdir"/usr/share/doc/$d/README.md
+		install -Dm644 docs/packaging.md "$pkgdir"/usr/share/doc/$d/packaging.md
+		install -Dm644 docs/operations.md "$pkgdir"/usr/share/doc/$d/operations.md
+	done
+	install -Dm644 docs/design.md "$pkgdir"/usr/share/doc/incus-backup/design.md
+	install -Dm644 docs/format.md "$pkgdir"/usr/share/doc/incus-backup/format.md
+	install -Dm644 examples/client.yaml "$pkgdir"/usr/share/doc/incus-backup/client.yaml.example
+	install -Dm644 examples/server.yaml "$pkgdir"/usr/share/doc/incus-backup-server/server.yaml.example
+
+	# /etc/incus-backup is shared by client.yaml/key.json (root, 0600) and
+	# server.yaml (incus-backup, 0600): the directory must stay
+	# traversable (0755), the FILES carry the protection.
+	install -d -m 0755 "$pkgdir"/etc/incus-backup
+	# Client state (bitmaps, spool): root only.
+	install -d -m 0700 "$pkgdir"/var/lib/incus-backup
+	# Server state (CA key, secrets.key, admin.sock): the service user, and
+	# its group for admin.sock (0660) - nobody else.
+	install -d -m 0750 -o incus-backup -g incus-backup "$pkgdir"/var/lib/incus-backup-server
+
+	install -Dm755 "$srcdir"/incus-backup.initd "$pkgdir"/etc/init.d/incus-backup
+	install -Dm644 "$srcdir"/incus-backup.confd "$pkgdir"/etc/conf.d/incus-backup
+	install -Dm644 "$srcdir"/incus-backup.logrotate "$pkgdir"/etc/logrotate.d/incus-backup
+	install -Dm755 "$srcdir"/incus-backup-server.initd "$pkgdir"/etc/init.d/incus-backup-server
+	install -Dm644 "$srcdir"/incus-backup-server.confd "$pkgdir"/etc/conf.d/incus-backup-server
+	install -Dm644 "$srcdir"/incus-backup-server.logrotate "$pkgdir"/etc/logrotate.d/incus-backup-server
+}
+
+server() {
+	pkgdesc="$pkgdesc (repository server)"
+	# Same /etc/incus-backup directory as the client package (identical
+	# mode, so apk accepts both owning it).
+	install -d -m 0755 "$subpkgdir"/etc/incus-backup
+	amove usr/bin/incus-backup-server \
+		var/lib/incus-backup-server
+}
+
+server_bashcomp() {
+	pkgdesc="$pkgdesc (repository server bash completion)"
+	install_if="$pkgname-server=$pkgver-r$pkgrel bash-completion"
+	amove usr/share/bash-completion/completions/incus-backup-server
+}
+
+server_doc() {
+	pkgdesc="$pkgdesc (repository server documentation)"
+	install_if="docs $pkgname-server=$pkgver-r$pkgrel"
+	amove usr/share/doc/incus-backup-server \
+		'usr/share/man/man1/incus-backup-server*'
+	gzip -n -9 "$subpkgdir"/usr/share/man/man1/*.1
+}
+
+server_openrc() {
+	pkgdesc="$pkgdesc (repository server OpenRC service)"
+	# The logrotate config only does something with logrotate installed.
+	depends="logrotate"
+	install_if="openrc $pkgname-server=$pkgver-r$pkgrel"
+	amove etc/init.d/incus-backup-server \
+		etc/conf.d/incus-backup-server \
+		etc/logrotate.d/incus-backup-server
+}
+
+openrc() {
+	default_openrc
+	depends="logrotate" # after default_openrc, which resets depends
+	amove etc/logrotate.d/incus-backup
+}
+
+# Filled in by scripts/release.sh, which writes the publishable copy of
+# this file (dist/aports/incus-backup/) with the checksums of the real
+# release tarball and of the files above.
+sha512sums=""

@@ -1,0 +1,29 @@
+# /etc/incus-backup/server.yaml  (created by `incus-backup-server init`, mode 0600)
+#
+# This file is BOOTSTRAP ONLY: what the server needs before it can reach PostgreSQL.
+# Everything operational is stored in PostgreSQL and managed with the CLI (or the local admin API):
+#   repositories (filesystem or S3) ...... incus-backup-server repo create|attach|list|probe
+#   S3 credentials (sealed secret store) .. incus-backup-server credential create|rotate|list|delete
+#   policies, retention, time zones ....... incus-backup-server policy set|assign|list
+#   schedules (prune, gc, verify, scrub) .. incus-backup-server maintenance show|set   (GC grace, re-verify age too)
+#   sync jobs and their options ........... incus-backup-server sync add|set|run|status
+#   snapshot protection, notes, forget .... incus-backup-server snapshot ...
+listen: ":8007"
+state_dir: /var/lib/incus-backup-server      # CA, server certificate, secrets.key (seals S3 credentials), sync credentials, admin.sock
+database_url: postgres://incus_backup:CHANGE-ME@127.0.0.1/incus_backup?sslmode=disable
+sans: [backup.example.net]                   # names/IPs clients will use (put in the server certificate)
+# admin_socket: /var/lib/incus-backup-server/admin.sock   # local administration API for the management UI ("off" disables)
+#
+# Web UI and management API /api/v1 (HTTPS; people sign in here, hosts never do):
+# web_listen: ":8443"                          # "off" disables
+# web:
+#   mode: self                                 # self (default: self-signed, renewed) | files | acme
+#   cert: /etc/ssl/backup.example.net.crt      # mode files: reloaded when the files change
+#   key: /etc/ssl/backup.example.net.key
+#   domains: [backup.example.net]              # mode acme (TLS-ALPN-01: port 443 must reach this listener)
+#   email: ops@example.net
+#   acme_http_listen: ":8080"                  # optional HTTP-01 / redirect listener
+#
+# Prometheus (docs/metrics.md); /api/v1/metrics on the web listener works with an API token anyway:
+# metrics_listen: 127.0.0.1:9187
+# metrics_unauthenticated: false               # true only on a private address

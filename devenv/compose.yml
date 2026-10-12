@@ -1,0 +1,13 @@
+# Local development PostgreSQL for incus-backup-server.
+#   export INCUS_BACKUP_TEST_DATABASE_URL=postgres://incus_backup:incus_backup@127.0.0.1:55433/incus_backup_test?sslmode=disable
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: incus_backup
+      POSTGRES_PASSWORD: incus_backup
+      POSTGRES_DB: incus_backup_test
+    ports:
+      - "127.0.0.1:55433:5432"
+    tmpfs:
+      - /var/lib/postgresql/data

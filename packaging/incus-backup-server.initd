@@ -1,0 +1,95 @@
+#!/sbin/openrc-run
+# incus-backup-server: repository server (agent API on :8007 with mTLS, local
+# admin API on <state_dir>/admin.sock). Runs as the unprivileged
+# incus-backup user under supervise-daemon (real supervision: respawn on a
+# crash, "started" means the process is still running).
+#
+# Configuration is NOT here: /etc/incus-backup/server.yaml is bootstrap only
+# (written by `incus-backup-server init`), everything else lives in
+# PostgreSQL. /etc/conf.d/incus-backup-server only carries OpenRC knobs.
+
+name="incus-backup-server"
+description="incus-backup repository server"
+
+: ${INCUS_BACKUP_SERVER_CONFIG:=/etc/incus-backup/server.yaml}
+: ${INCUS_BACKUP_SERVER_STATE_DIR:=/var/lib/incus-backup-server}
+: ${INCUS_BACKUP_SERVER_LOG:=/var/log/incus-backup/server.log}
+
+supervisor=supervise-daemon
+command="/usr/bin/incus-backup-server"
+command_args="--config ${INCUS_BACKUP_SERVER_CONFIG} serve ${INCUS_BACKUP_SERVER_OPTS}"
+command_user="incus-backup:incus-backup"
+pidfile="/run/${RC_SVCNAME}.pid"
+output_log="${INCUS_BACKUP_SERVER_LOG}"
+error_log="${INCUS_BACKUP_SERVER_LOG}"
+umask=027
+
+# Hardening: supervise-daemon sets no_new_privs on the child, so it can
+# never gain privileges through exec (setuid binaries, file capabilities).
+# Together with the non-root command_user that leaves it with an empty
+# capability set: both ports are unprivileged and all state belongs to the
+# service user, so no `capabilities=` line is needed (or wanted).
+no_new_privs=yes
+
+# Respawn: rate-limited (respawn_delay) but never given up (respawn_max=0
+# is supervise-daemon's "unlimited"): a PostgreSQL outage longer than a few
+# respawns must not leave the backup server down until someone notices.
+# Assigned unconditionally: Alpine's /etc/rc.conf sets respawn_delay=2,
+# respawn_max=5, respawn_period=1800 for every service (found by running
+# this script: supervise-daemon got exactly those). conf.d overrides go
+# through the INCUS_BACKUP_SERVER_RESPAWN_* names.
+respawn_delay="${INCUS_BACKUP_SERVER_RESPAWN_DELAY:-10}"
+respawn_max="${INCUS_BACKUP_SERVER_RESPAWN_MAX:-0}"
+respawn_period="${INCUS_BACKUP_SERVER_RESPAWN_PERIOD:-1800}"
+# Graceful stop: SIGTERM ends the HTTP server and the maintenance loop;
+# give in-flight work a minute before SIGKILL.
+retry="${INCUS_BACKUP_SERVER_STOP_RETRY:-TERM/60/KILL/5}"
+
+depend() {
+	need net localmount
+	use postgresql logger dns
+	after postgresql zfs-mount firewall
+}
+
+start_pre() {
+	if [ ! -r "${INCUS_BACKUP_SERVER_CONFIG}" ]; then
+		eerror "${INCUS_BACKUP_SERVER_CONFIG} does not exist yet. Set up PostgreSQL, then run:"
+		eerror "  incus-backup-server init --database-url postgres://... --datastore /srv/incus-backup --san <name>"
+		eerror "(see /usr/share/doc/incus-backup-server/packaging.md)"
+		return 1
+	fi
+	for f in "${INCUS_BACKUP_SERVER_CONFIG}" /etc/conf.d/"${RC_SVCNAME}"; do
+		if [ -e "$f.apk-new" ]; then
+			ewarn "$f.apk-new exists: a package upgrade shipped a new version of this file; merge it by hand (diff $f $f.apk-new)"
+		fi
+	done
+	# server.yaml may contain the database password: service user, 0600.
+	checkpath --file --owner incus-backup:incus-backup --mode 0600 "${INCUS_BACKUP_SERVER_CONFIG}"
+	checkpath --directory --owner incus-backup:incus-backup --mode 0750 "${INCUS_BACKUP_SERVER_STATE_DIR}"
+	# Private keys and the secret store are never group/world readable.
+	for f in ca.key server.key secrets.key; do
+		[ -e "${INCUS_BACKUP_SERVER_STATE_DIR}/$f" ] || continue
+		checkpath --file --owner incus-backup:incus-backup --mode 0600 "${INCUS_BACKUP_SERVER_STATE_DIR}/$f"
+	done
+	checkpath --directory --owner root:root --mode 0755 "${INCUS_BACKUP_SERVER_LOG%/*}"
+	checkpath --file --owner incus-backup:incus-backup --mode 0640 "${INCUS_BACKUP_SERVER_LOG}"
+}
+
+# Health check (supervise-daemon calls it every healthcheck_timer seconds
+# when that is set in conf.d; `rc-service incus-backup-server healthcheck`
+# runs it by hand). It runs `incus-backup-server status` as the service
+# user: that proves the configuration loads, PostgreSQL answers and the
+# repository is readable. It does NOT talk to the running daemon. A failure
+# makes supervise-daemon RESTART the daemon, which interrupts running
+# backup sessions and does not help when PostgreSQL itself is down, so it is
+# off by default (see conf.d).
+healthcheck() {
+	local repo=""
+	[ -n "${INCUS_BACKUP_SERVER_HEALTH_REPOSITORY}" ] && repo="--repository ${INCUS_BACKUP_SERVER_HEALTH_REPOSITORY}"
+	timeout "${INCUS_BACKUP_SERVER_HEALTH_TIMEOUT:-60}" \
+		su -s /bin/sh incus-backup -c "$command --config ${INCUS_BACKUP_SERVER_CONFIG} $repo status" >/dev/null 2>&1
+}
+
+unhealthy() {
+	ewarn "${RC_SVCNAME}: health check (incus-backup-server status) failed; supervise-daemon restarts the server"
+}

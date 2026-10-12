@@ -1,0 +1,8 @@
+#!/bin/sh
+# Stop the client daemon before its binary disappears. The key
+# (/etc/incus-backup/key.json), configuration and state are NEVER removed.
+if [ -x /etc/init.d/incus-backup ] && command -v rc-service >/dev/null 2>&1; then
+	rc-service incus-backup --ifstarted stop || true
+fi
+echo "incus-backup removed; /etc/incus-backup (including the key) and /var/lib/incus-backup are kept."
+exit 0

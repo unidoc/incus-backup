@@ -1,0 +1,38 @@
+# OpenRC settings of incus-backup-server. NOT the server configuration:
+#   /etc/incus-backup/server.yaml  bootstrap only (listen address, state dir,
+#                                  database URL), written by `incus-backup-server init`
+#   PostgreSQL                     everything else (repositories, policies,
+#                                  schedules, sync jobs), managed with the CLI
+
+# Bootstrap file (default /etc/incus-backup/server.yaml).
+#INCUS_BACKUP_SERVER_CONFIG="/etc/incus-backup/server.yaml"
+
+# Must match state_dir in server.yaml (default /var/lib/incus-backup-server);
+# start_pre enforces its owner and mode (incus-backup, 0750).
+#INCUS_BACKUP_SERVER_STATE_DIR="/var/lib/incus-backup-server"
+
+# Daemon output (stdout + stderr), rotated by /etc/logrotate.d/incus-backup-server.
+#INCUS_BACKUP_SERVER_LOG="/var/log/incus-backup/server.log"
+
+# Extra arguments for `incus-backup-server serve`.
+#INCUS_BACKUP_SERVER_OPTS=""
+
+# Stop schedule: SIGTERM, wait, then SIGKILL.
+#INCUS_BACKUP_SERVER_STOP_RETRY="TERM/60/KILL/5"
+
+# Respawn after a crash: wait DELAY seconds; MAX=0 never gives up. For a hard
+# limit set e.g. MAX=10 PERIOD=600 (more than 10 crashes in 600 s: stay down).
+# (The generic respawn_* variables of /etc/rc.conf are overridden on purpose.)
+#INCUS_BACKUP_SERVER_RESPAWN_DELAY=10
+#INCUS_BACKUP_SERVER_RESPAWN_MAX=0
+#INCUS_BACKUP_SERVER_RESPAWN_PERIOD=1800
+
+# Periodic health check (`incus-backup-server status` as the service user).
+# OFF by default: a failed check makes supervise-daemon restart the server,
+# which interrupts running backups, and a restart cannot cure the usual
+# cause (PostgreSQL unreachable). Enable it only if you want restarts on a
+# wedged control plane. With several repositories, name one to check.
+#healthcheck_delay=300
+#healthcheck_timer=600
+#INCUS_BACKUP_SERVER_HEALTH_REPOSITORY=""
+#INCUS_BACKUP_SERVER_HEALTH_TIMEOUT=60
