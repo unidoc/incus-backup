@@ -3,6 +3,8 @@ package service_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -125,5 +127,90 @@ func TestSyncedCommitTimeIsBoundedBySnapshotIDTime(t *testing.T) {
 		if !c.ok && !errors.Is(err, service.ErrBadRequest) {
 			t.Errorf("%s: want a bad request, got %v", c.name, err)
 		}
+	}
+}
+
+// A peer chooses its transfer ids: it may hold at most MaxSyncPinsPerPeer pins per repository. Beyond
+// that it is refused (releasing the oldest could unprotect a transfer that is still sending), other
+// peers and local transfers are unaffected, a commit or the reaper frees a slot.
+func TestSyncPinsPerPeerAreCapped(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	k := keys(1)
+	w := e.enrol("peer", api.ScopeSyncWrite)
+	other := e.enrol("peer2", api.ScopeSyncWrite)
+	repo, _ := e.svc.SyncHostRepo(ctx, w, api.ScopeSyncWrite)
+	as := func(h *service.Host, id string) context.Context {
+		return service.WithSyncPeer(service.WithSyncTransfer(ctx, h.ID+"/"+id), h.ID)
+	}
+	missing := func(c context.Context) error {
+		id, _, _ := k.EncodeChunk([]byte("m"), format.EncodeOpts{})
+		_, err := e.svc.SyncMissing(c, repo, []string{id.String()})
+		return err
+	}
+	for i := 0; i < service.MaxSyncPinsPerPeer; i++ {
+		if err := missing(as(w, fmt.Sprintf("%02x", i))); err != nil {
+			t.Fatalf("transfer %d: %v", i, err)
+		}
+	}
+	// an existing transfer keeps working at the cap; a new id is refused
+	if err := missing(as(w, "00")); err != nil {
+		t.Fatalf("an open transfer must keep working at the cap: %v", err)
+	}
+	if err := missing(as(w, "ff")); !errors.Is(err, service.ErrTooManyRequests) {
+		t.Fatalf("a %dth transfer id must be refused with ErrTooManyRequests, got %v", service.MaxSyncPinsPerPeer+1, err)
+	}
+	if err := missing(as(other, "ff")); err != nil {
+		t.Fatalf("another peer must not be affected: %v", err)
+	}
+	if err := missing(service.WithSyncTransfer(ctx, "run/1")); err != nil {
+		t.Fatalf("a local transfer (no peer) is not capped: %v", err)
+	}
+	// a commit releases that transfer's pin: its slot is free again
+	_, blob, put := syncSnapshotPut(t, k, snapID(e.now.Add(-time.Hour), 7), e.now.Add(-time.Hour), e.now.Add(-time.Hour), "slot chunk")
+	id, _, _ := k.EncodeChunk([]byte("slot chunk"), format.EncodeOpts{})
+	if err := e.svc.SyncPutChunk(as(w, "00"), repo, id.String(), blob); err != nil {
+		t.Fatal(err)
+	}
+	if err := e.svc.SyncPutSnapshot(as(w, "00"), repo, k.DomainID, put); err != nil {
+		t.Fatal(err)
+	}
+	if err := missing(as(w, "ff")); err != nil {
+		t.Fatalf("the slot of a committed transfer must be free: %v", err)
+	}
+	// silence for two hours frees the rest
+	e.now = e.now.Add(3 * time.Hour)
+	e.svc.ReapSessions(ctx)
+	for i := 0; i < service.MaxSyncPinsPerPeer; i++ {
+		if err := missing(as(w, fmt.Sprintf("a%d", i))); err != nil {
+			t.Fatalf("after reaping, transfer %d: %v", i, err)
+		}
+	}
+}
+
+// The writer-slot conflict names who really holds it: a host by name, a hostless holder (a delete, a sync
+// commit) as "the server", never as "sync".
+func TestWriterConflictNamesTheHolder(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	k := keys(1)
+	b := e.enrol("benfica", api.ScopeBackup)
+	req := func(n int) api.SessionRequest {
+		return api.SessionRequest{GroupID: group, SnapshotID: snapID(e.now, n), Kind: "block", Created: e.now, Project: "p", Object: "vm/root"}
+	}
+	_, err := e.svc.BeginSession(ctx, b, k.DomainID, req(1))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.svc.BeginSession(ctx, b, k.DomainID, req(2))
+	if err == nil || !strings.Contains(err.Error(), "started by benfica") {
+		t.Fatalf("a host holder must be named: %v", err)
+	}
+	if _, err := e.svc.DB.Pool().Exec(ctx, `UPDATE sessions SET host_id=NULL WHERE state='open' AND group_id=$1`, group); err != nil {
+		t.Fatal(err)
+	}
+	_, err = e.svc.BeginSession(ctx, b, k.DomainID, req(3))
+	if err == nil || strings.Contains(err.Error(), "by sync") || !strings.Contains(err.Error(), "the server") {
+		t.Fatalf("a hostless holder must not be called sync: %v", err)
 	}
 }

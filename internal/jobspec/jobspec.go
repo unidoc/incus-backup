@@ -20,6 +20,7 @@ import (
 	"time"
 	"unicode"
 
+	"github.com/unidoc/incus-backup/internal/archive"
 	"github.com/unidoc/incus-backup/internal/format"
 	"github.com/unidoc/incus-backup/internal/fscat"
 	"github.com/unidoc/incus-backup/internal/recovery"
@@ -68,17 +69,19 @@ const (
 // Limits.
 const (
 	MaxDeliveryBytes = 4 << 30 // a sealed delivery
-	DeliveryTTL      = time.Hour
-	MaxPaths         = 256
-	MaxPathLen       = 4096
-	MaxNameLen       = 256
-	MaxLogLines      = 1000 // per job, server side
-	MaxLogLineLen    = 1000
-	MaxMessageLen    = 2000
-	MaxLinesPerCall  = 200
-	Lease            = 5 * time.Minute // a running job whose host stays silent this long has failed
-	QueueTTL         = 24 * time.Hour  // a queued job nobody picked up by then expires
-	MaxWait          = 60 * time.Second
+	// MaxEntriesCeiling is the hard ceiling of guest_files' max_entries (the default is archive.DefaultMaxEntries).
+	MaxEntriesCeiling = archive.MaxEntriesCeiling
+	DeliveryTTL       = time.Hour
+	MaxPaths          = 256
+	MaxPathLen        = 4096
+	MaxNameLen        = 256
+	MaxLogLines       = 1000 // per job, server side
+	MaxLogLineLen     = 1000
+	MaxMessageLen     = 2000
+	MaxLinesPerCall   = 200
+	Lease             = 5 * time.Minute // a running job whose host stays silent this long has failed
+	QueueTTL          = 24 * time.Hour  // a queued job nobody picked up by then expires
+	MaxWait           = 60 * time.Second
 )
 
 // Info is what the system knows about a job type.
@@ -161,12 +164,15 @@ type RestoreVolume struct {
 // GuestFiles recovers paths from a VM disk backup through a disposable VM and delivers them as a
 // tar sealed to RecipientPublicKey (X25519, 32 bytes, standard base64).
 type GuestFiles struct {
-	Project            string   `json:"project"`
-	Object             string   `json:"object"`
-	Snapshot           string   `json:"snapshot,omitempty"`
-	Paths              []string `json:"paths"`
-	Partition          int      `json:"partition,omitempty"`
-	RecipientPublicKey string   `json:"recipient_public_key"`
+	Project   string   `json:"project"`
+	Object    string   `json:"object"`
+	Snapshot  string   `json:"snapshot,omitempty"`
+	Paths     []string `json:"paths"`
+	Partition int      `json:"partition,omitempty"`
+	// MaxEntries raises the cap on the number of files/directories recovered (0 = archive.DefaultMaxEntries,
+	// at most MaxEntriesCeiling).
+	MaxEntries         int    `json:"max_entries,omitempty"`
+	RecipientPublicKey string `json:"recipient_public_key"`
 }
 
 // FSExtract extracts paths of a filesystem (catalog) snapshot and delivers them sealed.
@@ -375,6 +381,9 @@ func Validate(typ string, raw []byte) (any, []byte, error) {
 			err = errors.Join(name("project", p.Project, true), object("object", p.Object, true), snapshot(p.Snapshot))
 			if err == nil && (p.Partition < 0 || p.Partition > 128) {
 				err = invalid("partition must be 0..128")
+			}
+			if err == nil && (p.MaxEntries < 0 || p.MaxEntries > MaxEntriesCeiling) {
+				err = invalid("max_entries must be 0 (default %d) .. %d", archive.DefaultMaxEntries, MaxEntriesCeiling)
 			}
 			if err == nil {
 				p.Paths, err = paths(p.Paths, recovery.CleanPaths)

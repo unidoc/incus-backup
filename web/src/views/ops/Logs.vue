@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // The daemon's recent log (the last 5000 lines kept in memory; secret attributes are redacted when
 // captured). Level filter, search, follow (polls ?after= every 2 s). Admin only.
+import { visibleTimeout } from '@/lib/poll'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import Icon from '@/components/icons/Icon.vue'
 import Callout from '@/components/Callout.vue'
@@ -25,12 +26,12 @@ const error = ref('')
 const box = ref<HTMLElement | null>(null)
 const atBottom = ref(true)
 let after = 0
-let timer: ReturnType<typeof setTimeout> | null = null
+let cancelTimer: (() => void) | null = null
 let ctrl: AbortController | null = null
 let gen = 0
 
 async function load(reset: boolean) {
-  if (timer) { clearTimeout(timer); timer = null }
+  if (cancelTimer) { cancelTimer(); cancelTimer = null }
   const my = reset ? ++gen : gen
   if (reset) { after = 0; lines.value = []; loading.value = true }
   ctrl?.abort()
@@ -49,13 +50,13 @@ async function load(reset: boolean) {
   } finally {
     if (my === gen) loading.value = false
   }
-  if (follow.value && my === gen) timer = setTimeout(() => load(false), 2000)
+  if (follow.value && my === gen) cancelTimer = visibleTimeout(() => void load(false), 2000)
 }
 let deb: ReturnType<typeof setTimeout> | null = null
 watch([level, q], () => { if (deb) clearTimeout(deb); deb = setTimeout(() => load(true), 250) })
-watch(follow, (on) => { if (on) void load(false); else if (timer) { clearTimeout(timer); timer = null } })
+watch(follow, (on) => { if (on) void load(false); else if (cancelTimer) { cancelTimer(); cancelTimer = null } })
 void load(true)
-onBeforeUnmount(() => { gen++; ctrl?.abort(); if (timer) clearTimeout(timer); if (deb) clearTimeout(deb) })
+onBeforeUnmount(() => { gen++; ctrl?.abort(); if (cancelTimer) cancelTimer(); if (deb) clearTimeout(deb) })
 
 function onScroll() {
   const el = box.value

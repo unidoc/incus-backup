@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // One sync job: state and lag, run now (with live progress from the run history), the run history as
 // a chart and a table, the PBS-class options, schedule and pause, and removal.
+import { usePoll } from '@/lib/poll'
 import { computed, reactive, ref, watch, onBeforeUnmount } from 'vue'
 import { RouterLink, useRouter } from 'vue-router'
 import Icon from '@/components/icons/Icon.vue'
@@ -50,13 +51,13 @@ const running = ref(false)
 const started = ref(0)
 const now = ref(Date.now())
 const lastResult = ref<{ ok: boolean; error?: string; r: SyncResult } | null>(null)
-let poll: ReturnType<typeof setInterval> | null = null
+let poll: (() => void) | null = null
 const liveRun = computed(() => list(runs.data.value).find((r) => r.status === 'running'))
 watch(() => running.value || !!liveRun.value, (on) => {
-  if (on && !poll) poll = setInterval(() => { now.value = Date.now(); void runs.refresh() }, 2000)
-  if (!on && poll) { clearInterval(poll); poll = null }
+  if (on && !poll) poll = usePoll(() => { now.value = Date.now(); void runs.refresh() }, 2000)
+  if (!on && poll) { poll(); poll = null }
 }, { immediate: true })
-onBeforeUnmount(() => { if (poll) clearInterval(poll) })
+onBeforeUnmount(() => { if (poll) poll() })
 async function runNow() {
   running.value = true
   started.value = Date.now()

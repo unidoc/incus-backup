@@ -18,6 +18,12 @@ export interface LiveEvent<T = unknown> { type: LiveEventType; data: T }
 type Handler = (data: unknown, ev: LiveEvent) => void
 type BusKey = LiveEventType | 'resync' | '*'
 
+/** Most events one onVisible() subscription keeps while the tab is hidden. */
+const HIDDEN_QUEUE_MAX = 50
+function safeKey(ev: LiveEvent): string | null {
+  try { return JSON.stringify([ev.type, ev.data]) } catch { return null }
+}
+
 /** A tiny typed event bus. on() returns the unsubscribe function. */
 export class EventBus {
   private handlers = new Map<BusKey, Set<Handler>>()
@@ -28,27 +34,35 @@ export class EventBus {
     return () => set!.delete(fn)
   }
   /**
-   * on(), but handlers run only while the tab is visible. Events that arrive in a hidden tab are
-   * remembered (one per subscription) and the handler runs once when the tab becomes visible again.
+   * on(), but handlers run only while the tab is visible. Events that arrive in a hidden tab are queued
+   * (per subscription, at most HIDDEN_QUEUE_MAX, oldest dropped, an event identical to one already queued
+   * is not queued twice) and replayed in order when the tab becomes visible again, so handlers that filter
+   * by id still see their own event even if another one arrived after it.
    * Refetching on an event is a request like any other, and the server counts it as activity: a hidden
    * tab must not keep its session alive (docs/authentication.md, "What counts as activity").
    */
   onVisible(type: BusKey, fn: Handler): () => void {
-    let pending: [unknown, LiveEvent] | null = null
+    let pending: [unknown, LiveEvent][] = []
     const run = (d: unknown, ev: LiveEvent) => {
-      if (typeof document === 'undefined' || document.visibilityState === 'visible') fn(d, ev)
-      else pending = [d, ev]
+      if (typeof document === 'undefined' || document.visibilityState === 'visible') { fn(d, ev); return }
+      const key = safeKey(ev)
+      if (key !== null && pending.some(([, q]) => safeKey(q) === key)) return
+      pending.push([d, ev])
+      if (pending.length > HIDDEN_QUEUE_MAX) pending.shift()
     }
     const onVis = () => {
-      if (document.visibilityState !== 'visible' || !pending) return
-      const [d, ev] = pending
-      pending = null
-      try { fn(d, ev) } catch (e) { console.error('event handler failed', e) }
+      if (document.visibilityState !== 'visible' || !pending.length) return
+      const batch = pending
+      pending = []
+      for (const [d, ev] of batch) {
+        try { fn(d, ev) } catch (e) { console.error('event handler failed', e) }
+      }
     }
     if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVis)
     const off = this.on(type, run)
     return () => {
       off()
+      pending = []
       if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVis)
     }
   }

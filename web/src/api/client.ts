@@ -178,7 +178,6 @@ export const http = {
   del: <T>(path: string, body?: unknown, o?: RequestOptions) => request<T>('DELETE', path, { ...o, body }),
 }
 
-/** Encode one path segment (names may contain dots, spaces, slashes are refused by the server anyway). */
 /**
  * Routes that answer 401 for a WRONG PASSWORD (not only for "not signed in"), e.g. token creation and
  * two-factor enrolment, which re-check the password when the sign-in is older than 10 minutes. They must
@@ -197,4 +196,5 @@ export async function passwordChecked<T>(call: () => Promise<T>): Promise<T> {
   }
 }
 
+/** Encode one path segment (names may contain dots, spaces, slashes are refused by the server anyway). */
 export const seg = (s: string) => encodeURIComponent(s)

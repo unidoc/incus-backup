@@ -127,3 +127,15 @@ func TestTokenLifetimeAndSSOOnlyRule(t *testing.T) {
 		t.Fatalf("SSO-only user TOTP: %v", err)
 	}
 }
+
+// A name no user can have (over 64 bytes) is an ordinary 401 and is never remembered.
+func TestLoginRefusesOverlongNames(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	name := strings.Repeat("x", 300)
+	for i := 0; i < 8; i++ {
+		if _, err := e.Login(ctx, name, "wrong guess", "", "", ""); !errors.Is(err, auth.ErrInvalidCredentials) {
+			t.Fatalf("guess %d: %v, want ErrInvalidCredentials every time", i, err)
+		}
+	}
+}

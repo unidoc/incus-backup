@@ -13,10 +13,12 @@ import (
 	"github.com/spf13/cobra"
 	"golang.org/x/term"
 
+	"github.com/unidoc/incus-backup/internal/archive"
 	"github.com/unidoc/incus-backup/internal/client/app"
 	"github.com/unidoc/incus-backup/internal/client/engine"
 	"github.com/unidoc/incus-backup/internal/client/incusx"
 	"github.com/unidoc/incus-backup/internal/format"
+	"github.com/unidoc/incus-backup/internal/jobspec"
 	"github.com/unidoc/incus-backup/internal/remote"
 )
 
@@ -469,6 +471,7 @@ func (c *cli) cmdRestore() *cobra.Command {
 	var gserver, gproject, gsnap, gdest, gimage, gpool, gmem string
 	var gpart int
 	var gmax int64
+	var gentries int
 	guestFiles := &cobra.Command{Use: "guest-files OBJECT PATH...", Short: "Recover single files from a VM disk backup through a disposable, isolated recovery VM", Args: cobra.MinimumNArgs(2),
 		Long: `OBJECT is a VM disk (instance/NAME/root) or a block volume (volume/NAME). The disk of the chosen snapshot is
 written to a scratch volume, a throw-away VM without network and without any of your profiles mounts it
@@ -482,6 +485,9 @@ Needs a recovery image with cloud-init (recovery.image in client.yaml or --image
 			if err != nil {
 				return err
 			}
+			if gentries < 0 || gentries > archive.MaxEntriesCeiling {
+				return fmt.Errorf("--max-entries must be 0 (default) .. %d", archive.MaxEntriesCeiling)
+			}
 			if gdest == "" {
 				return fmt.Errorf("--to DIRECTORY is required")
 			}
@@ -491,7 +497,7 @@ Needs a recovery image with cloud-init (recovery.image in client.yaml or --image
 			rc := a.Cfg.Recovery
 			res, err := a.Eng.RestoreGuestFiles(ctx, engine.GuestFilesOptions{Server: gserver, Project: gproject, Name: args[0], Snapshot: gsnap,
 				Paths: args[1:], Partition: gpart, Dest: gdest, Image: firstNonEmpty(gimage, rc.Image), Pool: firstNonEmpty(gpool, rc.Pool),
-				Memory: firstNonEmpty(gmem, rc.Memory), CPU: rc.CPU, MaxBytes: gmax})
+				Memory: firstNonEmpty(gmem, rc.Memory), CPU: rc.CPU, MaxBytes: gmax, MaxEntries: gentries})
 			if res != nil && res.Header != nil {
 				for p, st := range res.Header.Paths {
 					fmt.Printf("  %-40s %s\n", p, st)
@@ -515,7 +521,8 @@ Needs a recovery image with cloud-init (recovery.image in client.yaml or --image
 	gf.StringVar(&gpool, "pool", "", "storage pool for the scratch volumes")
 	gf.StringVar(&gmem, "memory", "", "memory of the recovery VM (default 512MiB)")
 	gf.IntVar(&gpart, "partition", 0, "partition number of the guest disk (default: the first one that holds the first path)")
-	gf.Int64Var(&gmax, "max-bytes", 8<<30, "refuse to extract more than this many bytes")
+	gf.Int64Var(&gmax, "max-bytes", jobspec.MaxDeliveryBytes, "refuse to extract more than this many bytes (default 4 GiB, the same limit as the guest_files job)")
+	gf.IntVar(&gentries, "max-entries", 0, fmt.Sprintf("refuse to extract more than this many files and directories (default %d, at most %d)", archive.DefaultMaxEntries, archive.MaxEntriesCeiling))
 	root.AddCommand(inst, vol, dirCmd, guestFiles)
 	return root
 }

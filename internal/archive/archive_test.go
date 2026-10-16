@@ -287,3 +287,21 @@ func TestUntrustedEntryCountIsCapped(t *testing.T) {
 		t.Fatalf("exactly the cap must pass: %v", err)
 	}
 }
+
+func TestUntrustedEntryCapCanBeRaisedButNotPastTheCeiling(t *testing.T) {
+	if DefaultMaxEntries != 1_000_000 || MaxEntriesCeiling != 10_000_000 {
+		t.Fatalf("documented limits changed: %d / %d", DefaultMaxEntries, MaxEntriesCeiling)
+	}
+	var b bytes.Buffer
+	tw := tar.NewWriter(&b)
+	for i := 0; i < 3; i++ {
+		if err := tw.WriteHeader(&tar.Header{Name: fmt.Sprintf("d%d", i), Typeflag: tar.TypeDir, Mode: 0o755}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	tw.Close()
+	// a value above the ceiling is clamped, not unlimited: nothing to refuse here, but it must not error out
+	if err := Extract(bytes.NewReader(b.Bytes()), t.TempDir(), ExtractOptions{Untrusted: true, MaxEntries: MaxEntriesCeiling * 100}); err != nil {
+		t.Fatalf("a raised cap must work: %v", err)
+	}
+}

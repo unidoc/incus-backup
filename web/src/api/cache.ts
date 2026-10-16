@@ -7,6 +7,7 @@
 // when older than `ttl`. Identical requests in flight are shared. Live events of the listed types and
 // a stream reconnect ('resync') trigger a refresh (debounced). invalidate(prefix) drops entries after
 // a mutation so the next read fetches.
+import { usePoll } from '@/lib/poll'
 import { onBeforeUnmount, shallowRef, watch, type ShallowRef } from 'vue'
 import { bus, type LiveEventType } from './events'
 import { isAbort } from './client'
@@ -105,7 +106,7 @@ export function useResource<T>(key: () => string, fetcher: (signal: AbortSignal)
   const offs: Array<() => void> = []
   for (const t of o.refreshOn ?? []) offs.push(bus.onVisible(t, soon)) // not while hidden: a refetch would renew the session
   offs.push(bus.onVisible('resync', soon))
-  const pollTimer = o.poll ? setInterval(() => { if (document.visibilityState === 'visible') void load(true) }, o.poll) : null
+  const pollTimer = o.poll ? usePoll(() => void load(true), o.poll) : null
 
   const onInvalidate = () => void load(true)
   watch(key, (k, old) => {
@@ -120,7 +121,7 @@ export function useResource<T>(key: () => string, fetcher: (signal: AbortSignal)
     alive = false
     offs.forEach((f) => f())
     listeners.get(current)?.delete(onInvalidate)
-    if (pollTimer) clearInterval(pollTimer)
+    pollTimer?.()
     if (debounce) clearTimeout(debounce)
   })
 

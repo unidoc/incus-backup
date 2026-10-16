@@ -194,7 +194,7 @@ type ExtractOptions struct {
 	// ownership is never changed; MaxBytes bounds the total size.
 	Untrusted bool
 	MaxBytes  int64
-	// MaxEntries bounds the number of archive entries of an untrusted extraction (0 = DefaultMaxEntries).
+	// MaxEntries bounds the number of archive entries of an untrusted extraction (0 = DefaultMaxEntries, at most MaxEntriesCeiling).
 	MaxEntries int
 	// Report, if set, receives what was skipped.
 	Report *ExtractReport
@@ -202,6 +202,10 @@ type ExtractOptions struct {
 
 // DefaultMaxEntries is the entry cap of an untrusted extraction when MaxEntries is 0.
 const DefaultMaxEntries = 1_000_000
+
+// MaxEntriesCeiling is the most an operator may raise the entry cap to (a large maildir or /usr can hold
+// more than DefaultMaxEntries inodes); ExtractTar clamps anything above it.
+const MaxEntriesCeiling = 10_000_000
 
 // ExtractReport counts what an untrusted extraction did.
 type ExtractReport struct {
@@ -294,6 +298,9 @@ func ExtractTar(tr *tar.Reader, dest string, o ExtractOptions) error {
 	entries, maxEntries := 0, o.MaxEntries
 	if maxEntries <= 0 {
 		maxEntries = DefaultMaxEntries
+	}
+	if maxEntries > MaxEntriesCeiling {
+		maxEntries = MaxEntriesCeiling
 	}
 	apply := func(path string, hdr *tar.Header, link bool) error {
 		if fi, lerr := os.Lstat(path); lerr != nil || (!link && fi.Mode()&os.ModeSymlink != 0) {

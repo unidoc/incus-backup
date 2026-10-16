@@ -2,6 +2,7 @@
 // The health of the machine and process this server runs on: host, process, disks (state directory and
 // every filesystem repository), PostgreSQL, listeners, the clock against this browser, charts of the
 // last hours (one sample a minute, kept 7 days), the support report and the opt-in update check.
+import { usePoll } from '@/lib/poll'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import Icon from '@/components/icons/Icon.vue'
@@ -41,8 +42,8 @@ async function loadStatus() {
   }
 }
 void loadStatus()
-const timer = setInterval(loadStatus, 15_000)
-onBeforeUnmount(() => clearInterval(timer))
+const stopPoll = usePoll(loadStatus, 15_000)
+onBeforeUnmount(stopPoll)
 
 const range = ref(24)
 const samples = useResource(() => `system:samples:${range.value}`, (s) => opsApi.system.samples(range.value, 360, s), { ttl: 60_000, poll: 60_000 })

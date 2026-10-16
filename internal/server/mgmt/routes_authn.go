@@ -324,6 +324,10 @@ func (s *Server) authnRoutes(h routeFn) {
 			s.fail(w, r, err)
 			return
 		}
+		if err := s.Auth.RequireLocalPassword(r.Context(), p.User); err != nil { // before the password prompt: single sign-on has none to give
+			s.authFail(w, r, err)
+			return
+		}
 		if err := s.Auth.Reauthenticate(r.Context(), p.User, cookieValue(r), req.Password); err != nil {
 			s.authFail(w, r, err)
 			return
@@ -376,6 +380,10 @@ func (s *Server) authnRoutes(h routeFn) {
 		var req docPasswordOpt
 		if err := decode(r, &req); err != nil {
 			s.fail(w, r, err)
+			return
+		}
+		if err := s.Auth.RequireLocalPassword(r.Context(), p.User); err != nil { // before the password prompt: single sign-on has none to give
+			s.authFail(w, r, err)
 			return
 		}
 		if err := s.Auth.Reauthenticate(r.Context(), p.User, cookieValue(r), req.Password); err != nil {

@@ -57,6 +57,12 @@ type Store struct {
 	// their claim on it, GC holds the write side for each final check+delete, so a chunk a
 	// session just relied on can never be swept.
 	gcMu sync.RWMutex
+	// LOCK ORDER (outermost first; never acquire against this order):
+	//   Session.commitMu -> gcMu -> pinMu -> Session.mu (leaf)
+	//   snapLock -> Session.commitMu            (commit: marker writes)
+	// commitMu is taken by Close and by the marker-write section of commit, and NEVER by pinned()
+	// or the GC sweep; Session.mu is never held across backend I/O, so GC and other sessions never
+	// wait for a (possibly minutes-long) backend write of one commit.
 	// pins: chunk ids that running sessions rely on (they said "present" or uploaded
 	// them), and, while a GC runs, the ids of every session that closed since it started.
 	pinMu     sync.Mutex
@@ -309,6 +315,10 @@ type Session struct {
 	index    []byte
 	manifest []byte
 	mu       sync.Mutex
+	// commitMu is held by commit while it writes index, manifest and marker, and taken first by Close:
+	// an abort waits for the marker writes (pins stay in known meanwhile, so a GC still honours them)
+	// and a commit that starts after Close sees closed and writes nothing. Lock order: see Store.gcMu.
+	commitMu sync.Mutex
 	// known holds the pins by liveKey (8 bytes of the id): a prefix shared with another chunk can
 	// only pin that one too (kept longer), never unpin anything.
 	known  map[uint64]struct{}
@@ -344,6 +354,8 @@ func (s *Store) BeginPinSession() *Session {
 // Close ends the session (after Commit or instead of it). Idempotent. Its pins move to the
 // shadow set while a GC runs, so a GC that is in the middle of its sweep keeps honouring them.
 func (x *Session) Close() {
+	x.commitMu.Lock() // wait for an in-progress commit's marker writes; never held by GC
+	defer x.commitMu.Unlock()
 	x.s.pinMu.Lock()
 	defer x.s.pinMu.Unlock()
 	x.mu.Lock()
@@ -536,14 +548,17 @@ func (x *Session) commit(source string, at time.Time) (*Receipt, error) {
 	if _, err := x.s.b.Stat(prefix + "commit.json"); err == nil {
 		return nil, ErrExists
 	}
+	// Serialise with Close (and a second commit of this session) WITHOUT holding x.mu during backend
+	// I/O: a Close that comes later waits here, then moves the pins to the GC shadow set; one that came
+	// first has set closed, and nothing may become visible. The pins stay in x.known until Close.
+	x.commitMu.Lock()
+	defer x.commitMu.Unlock()
 	x.mu.Lock()
-	if x.closed { // an abort raced the slow step 2 and dropped the pins: nothing may become visible
-		x.mu.Unlock()
+	closed := x.closed // an abort raced the slow step 2 and dropped the pins
+	x.mu.Unlock()
+	if closed {
 		return nil, ErrSessionClosed
 	}
-	// A later Close waits for the marker, then moves its pins to the GC shadow set if a GC started meanwhile.
-	// (A GC sweep batch that asks pinned() waits for these three writes too.)
-	defer x.mu.Unlock()
 	if err := x.s.b.Put(prefix+"index", x.index, false); err != nil {
 		return nil, err
 	}

@@ -2,7 +2,9 @@ package httpapi
 
 import (
 	"context"
+	"fmt"
 	"net/http"
+	"regexp"
 
 	"github.com/unidoc/incus-backup/internal/api"
 	"github.com/unidoc/incus-backup/internal/datastore"
@@ -51,7 +53,12 @@ func (s *Server) syncMissing(w http.ResponseWriter, r *http.Request, h *service.
 		s.badJSON(w, r, err)
 		return
 	}
-	m, err := s.Svc.SyncMissing(syncCtx(r, h), repo, req.IDs)
+	sctx, err := syncCtx(r, h)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	m, err := s.Svc.SyncMissing(sctx, repo, req.IDs)
 	if err != nil {
 		s.fail(w, r, err)
 		return
@@ -73,7 +80,12 @@ func (s *Server) syncPutChunk(w http.ResponseWriter, r *http.Request, h *service
 		s.badJSON(w, r, err)
 		return
 	}
-	if err := s.Svc.SyncPutChunk(syncCtx(r, h), repo, r.PathValue("id"), b); err != nil {
+	sctx, err := syncCtx(r, h)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if err := s.Svc.SyncPutChunk(sctx, repo, r.PathValue("id"), b); err != nil {
 		s.fail(w, r, err)
 		return
 	}
@@ -95,19 +107,30 @@ func (s *Server) syncPutSnapshot(w http.ResponseWriter, r *http.Request, h *serv
 		return
 	}
 	put.Meta.GroupID, put.Meta.SnapshotID = r.PathValue("group"), r.PathValue("snap")
-	if err := s.Svc.SyncPutSnapshot(syncCtx(r, h), repo, r.Header.Get(api.HeaderDomain), put); err != nil {
+	sctx, err := syncCtx(r, h)
+	if err != nil {
+		s.fail(w, r, err)
+		return
+	}
+	if err := s.Svc.SyncPutSnapshot(sctx, repo, r.Header.Get(api.HeaderDomain), put); err != nil {
 		s.fail(w, r, err)
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// syncTransferRE is the transfer id a client may send: the remote client uses 24 lower-case hex digits.
+var syncTransferRE = regexp.MustCompile(`^[0-9a-f]{1,32}$`)
+
 // syncCtx names the transfer a sync write belongs to: the calling host plus the id its client sends per
-// job run, so concurrent transfers into one repository keep separate chunk pins.
-func syncCtx(r *http.Request, h *service.Host) context.Context {
+// job run, so concurrent transfers into one repository keep separate chunk pins. The id is chosen by the
+// peer, so it is validated (hex, at most 32 characters; absent means the host's shared legacy transfer)
+// and the service caps the pins per host.
+func syncCtx(r *http.Request, h *service.Host) (context.Context, error) {
 	id := r.Header.Get(api.HeaderSyncTransfer)
-	if len(id) > 64 {
-		id = id[:64]
+	if id != "" && !syncTransferRE.MatchString(id) {
+		return nil, fmt.Errorf("%w: %s must be 1 to 32 lower-case hex digits", service.ErrBadRequest, api.HeaderSyncTransfer)
 	}
-	return service.WithSyncTransfer(r.Context(), h.ID+"/"+id)
+	ctx := service.WithSyncTransfer(r.Context(), h.ID+"/"+id)
+	return service.WithSyncPeer(ctx, h.ID), nil
 }

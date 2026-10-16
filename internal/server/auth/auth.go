@@ -111,48 +111,76 @@ type Store struct {
 
 // ghostLocks gives names with no password account (unknown names, single sign-on accounts) the same
 // lockout a real account has, so the answer to repeated wrong guesses (429 after five) does not tell
-// whether a name exists. It is in memory and bounded: a restart forgets it, and when it is full of live
-// locks new names are simply not tracked (they keep answering 401), which only ever costs the attacker.
+// whether a name exists. It is in memory and bounded: a restart forgets it. Entries are keyed by a hash
+// of the lower-cased name (a fixed 32 bytes, whatever the name's length; Login also refuses names over
+// maxLoginName before they get here), expire ghostTTL after their last failure, and when the map is
+// full of live entries the one expiring soonest is evicted, so new names are always tracked. The
+// remaining bound: an attacker who sends maxGhostLocks other fresh names can push a ghost's count out
+// again, which costs one full password-hash round per name.
 type ghostLocks struct {
 	mu sync.Mutex
-	m  map[string]ghostLock
+	m  map[[32]byte]ghostLock
 }
 
 type ghostLock struct {
 	failed int
-	until  time.Time
+	until  time.Time // locked until (zero = not locked)
+	expiry time.Time // the entry is dropped after this
 }
 
-const maxGhostLocks = 10000
+const (
+	maxGhostLocks = 10000
+	ghostTTL      = 24 * time.Hour // from the last failure; always longer than the longest lock
+	maxLoginName  = 256            // a user name is at most 64 bytes (validName); longer is refused before any lookup
+)
+
+func ghostKey(name string) [32]byte { return sha256.Sum256([]byte(strings.ToLower(name))) }
 
 func (g *ghostLocks) locked(name string, now time.Time) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	return g.m[name].until.After(now)
+	k := ghostKey(name)
+	e, ok := g.m[k]
+	if ok && !e.expiry.After(now) {
+		delete(g.m, k)
+		return false
+	}
+	return e.until.After(now)
 }
 
 func (g *ghostLocks) fail(name string, now time.Time) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if g.m == nil {
-		g.m = map[string]ghostLock{}
+		g.m = map[[32]byte]ghostLock{}
 	}
-	e, ok := g.m[name]
+	k := ghostKey(name)
+	e, ok := g.m[k]
+	if ok && !e.expiry.After(now) {
+		e = ghostLock{}
+		ok = false
+	}
 	if !ok && len(g.m) >= maxGhostLocks {
-		for k, v := range g.m { // drop what has expired
-			if !v.until.After(now) {
-				delete(g.m, k)
+		var oldest [32]byte
+		var oldestAt time.Time
+		first := true
+		for k2, v := range g.m {
+			if !v.expiry.After(now) {
+				delete(g.m, k2) // drop what has expired
+			} else if first || v.expiry.Before(oldestAt) {
+				oldest, oldestAt, first = k2, v.expiry, false
 			}
 		}
 		if len(g.m) >= maxGhostLocks {
-			return
+			delete(g.m, oldest)
 		}
 	}
 	e.failed++
 	if d := lockFor(e.failed); d > 0 {
 		e.until = now.Add(d)
 	}
-	g.m[name] = e
+	e.expiry = now.Add(ghostTTL)
+	g.m[k] = e
 }
 
 // New returns a Store.
@@ -540,6 +568,10 @@ func (s *Store) Login(ctx context.Context, name, password, code, ip, ua string) 
 		checkPassword(password, dummyHash) // the same work and answer for every name
 		return nil, ErrLocalLoginOff
 	}
+	if len(name) > maxLoginName { // no user has such a name: an ordinary failure, before any lookup or memory use
+		checkPassword(password, dummyHash)
+		return nil, ErrInvalidCredentials
+	}
 	now := s.Now()
 	tx, err := s.Pool.Begin(ctx)
 	if err != nil {
@@ -564,7 +596,7 @@ func (s *Store) Login(ctx context.Context, name, password, code, ip, ua string) 
 			return nil, ErrLocked
 		}
 		checkPassword(password, dummyHash) // same work as a real failure
-		s.ghosts.fail(key, now)
+		s.ghosts.fail(name, now)
 		return nil, ErrInvalidCredentials
 	}
 	if err != nil {
@@ -987,6 +1019,20 @@ func (s *Store) ListAudit(ctx context.Context, f AuditFilter) ([]AuditEntry, err
 		out = append(out, e)
 	}
 	return out, rows.Err()
+}
+
+// RequireLocalPassword returns the single-sign-on refusal (ErrBad wrapping ErrNoLocalPassword) for a user
+// who has no local password. Routes that need a password check (Reauthenticate) and refuse such users
+// anyway call it first, so the user is not asked for a password they do not have.
+func (s *Store) RequireLocalPassword(ctx context.Context, name string) error {
+	u, err := s.User(ctx, name)
+	if err != nil {
+		return err
+	}
+	if !u.HasPassword {
+		return fmt.Errorf("%w: %v", ErrBad, ErrNoLocalPassword)
+	}
+	return nil
 }
 
 // VerifyPassword checks a user's current password (for sensitive self-service actions). A wrong password
