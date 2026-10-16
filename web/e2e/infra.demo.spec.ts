@@ -315,7 +315,7 @@ test('viewer: capacity (filesystem and S3), overview widgets, and no operator co
   const offsite = page.getByTestId('cap-cards').locator('[data-repo="offsite"]')
   await offsite.click()
   await req
-  // the e2e demo runs "offsite" on S3 only when it was given MinIO; each backend has its own forecast text
+  // the e2e demo runs "offsite" on S3 only when it was started with -s3 (backend.ts starts the demo with -s3=false); each backend has its own forecast text
   if (/S3/.test(await offsite.innerText())) await expect(page.getByTestId('cap-forecast')).toContainText('No free-space forecast for object storage')
   else await expect(page.getByTestId('cap-forecast')).toContainText('80 % full')
   await expect(offsite).toHaveAttribute('aria-pressed', 'true')

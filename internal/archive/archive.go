@@ -214,6 +214,13 @@ type ExtractReport struct {
 	Skipped               []string
 }
 
+// linkStaysInside reports whether a symlink target taken from an untrusted archive can only lead
+// downwards from the link's own directory: relative, with no ".." component at all (a lexical check
+// of "a/../b" is not enough, since a/ may itself be a symlink pointing somewhere shallower).
+func linkStaysInside(linkname string) bool {
+	return linkname != "" && filepath.IsLocal(filepath.FromSlash(linkname)) && !hasDotDot(linkname) && !strings.HasPrefix(linkname, "/")
+}
+
 func hasDotDot(name string) bool {
 	for _, c := range strings.Split(name, "/") {
 		if c == ".." {
@@ -226,7 +233,7 @@ func hasDotDot(name string) bool {
 // safePath resolves name below root without ever following a symlink in any
 // directory component (a malicious or damaged archive must not write outside).
 func safePath(root, name string) (string, error) {
-	if name == "" || strings.HasPrefix(name, "/") || hasDotDot(name) {
+	if name == "" || strings.HasPrefix(name, "/") || hasDotDot(name) || !filepath.IsLocal(filepath.FromSlash(name)) {
 		return "", fmt.Errorf("unsafe path %q in archive", name)
 	}
 	clean := filepath.Clean(filepath.FromSlash(name))
@@ -254,7 +261,7 @@ func safePath(root, name string) (string, error) {
 // ensureParents creates the missing parent directories of name below root (never following a
 // symlink: an existing non-directory component is an error).
 func ensureParents(root, name string) error {
-	if name == "" || strings.HasPrefix(name, "/") || hasDotDot(name) {
+	if name == "" || strings.HasPrefix(name, "/") || hasDotDot(name) || !filepath.IsLocal(filepath.FromSlash(name)) {
 		return fmt.Errorf("unsafe path %q in archive", name)
 	}
 	parts := strings.Split(filepath.Clean(filepath.FromSlash(name)), string(filepath.Separator))
@@ -363,6 +370,12 @@ func ExtractTar(tr *tar.Reader, dest string, o ExtractOptions) error {
 			}
 			if n := strings.Trim(hdr.Name, "/"); n == "" || n == "." {
 				return fmt.Errorf("hostile archive entry %q (it would change the destination itself)", hdr.Name)
+			}
+			if hdr.Typeflag == tar.TypeSymlink && !linkStaysInside(hdr.Linkname) {
+				// recovered files are inspected on the operator's machine: a link to an absolute path or
+				// upwards would be a trap there, so it is reported as skipped instead of created
+				rep.Skipped = append(rep.Skipped, hdr.Name)
+				continue
 			}
 			switch hdr.Typeflag {
 			case tar.TypeDir, tar.TypeReg, tar.TypeSymlink:

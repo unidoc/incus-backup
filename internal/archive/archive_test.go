@@ -174,7 +174,7 @@ func TestUntrustedDirectoryEntryCannotActThroughAnExistingSymlink(t *testing.T) 
 	}
 	var b bytes.Buffer
 	tw := tar.NewWriter(&b)
-	_ = tw.WriteHeader(&tar.Header{Name: "x", Typeflag: tar.TypeSymlink, Linkname: victim, Mode: 0o777})
+	_ = tw.WriteHeader(&tar.Header{Name: "x", Typeflag: tar.TypeSymlink, Linkname: "inside", Mode: 0o777})
 	_ = tw.WriteHeader(&tar.Header{Name: "x/", Typeflag: tar.TypeDir, Mode: 0o777})
 	_ = tw.Close()
 	dest := t.TempDir()
@@ -303,5 +303,43 @@ func TestUntrustedEntryCapCanBeRaisedButNotPastTheCeiling(t *testing.T) {
 	// a value above the ceiling is clamped, not unlimited: nothing to refuse here, but it must not error out
 	if err := Extract(bytes.NewReader(b.Bytes()), t.TempDir(), ExtractOptions{Untrusted: true, MaxEntries: MaxEntriesCeiling * 100}); err != nil {
 		t.Fatalf("a raised cap must work: %v", err)
+	}
+}
+
+// An untrusted archive's symlinks may only lead downwards: absolute targets and any ".." are not
+// created (they are reported as skipped), relative downward ones are kept; nothing is ever written
+// through a link.
+func TestUntrustedSymlinkTargetsMustStayInside(t *testing.T) {
+	outside := t.TempDir()
+	bad := []string{outside, "/etc/shadow", "../up", "a/../../up", "a/../b", ".."}
+	for _, l := range bad {
+		dest := t.TempDir()
+		var rep ExtractReport
+		err := Extract(evil(t, &tar.Header{Name: "l", Typeflag: tar.TypeSymlink, Linkname: l, Mode: 0o777}), dest,
+			ExtractOptions{Untrusted: true, Report: &rep})
+		if err != nil {
+			t.Errorf("%q: %v", l, err)
+		}
+		if _, err := os.Lstat(filepath.Join(dest, "l")); err == nil || len(rep.Skipped) != 1 {
+			t.Errorf("link to %q was created (skipped=%v)", l, rep.Skipped)
+		}
+	}
+	dest := t.TempDir()
+	if err := Extract(evil(t, &tar.Header{Name: "ok", Typeflag: tar.TypeSymlink, Linkname: "sub/file", Mode: 0o777}), dest, ExtractOptions{Untrusted: true}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := os.Readlink(filepath.Join(dest, "ok")); got != "sub/file" {
+		t.Errorf("the downward link was not kept: %q", got)
+	}
+	// a write through a link planted earlier in the same archive is refused, and nothing lands outside
+	dest = t.TempDir()
+	err := Extract(evil(t,
+		&tar.Header{Name: "d", Typeflag: tar.TypeSymlink, Linkname: "inside", Mode: 0o777},
+		&tar.Header{Name: "d/pwn", Typeflag: tar.TypeReg, Size: 1, Mode: 0o644}), dest, ExtractOptions{Untrusted: true})
+	if err == nil {
+		t.Error("a write through a symlink was accepted")
+	}
+	if es, _ := os.ReadDir(outside); len(es) != 0 {
+		t.Fatalf("something was written outside: %v", es)
 	}
 }

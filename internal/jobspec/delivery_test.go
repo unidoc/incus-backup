@@ -8,6 +8,8 @@ import (
 	"errors"
 	"fmt"
 	"testing"
+
+	"github.com/unidoc/incus-backup/internal/archive"
 )
 
 // The browser digests what it sent, the host what the server forwarded (the server's canonical
@@ -82,5 +84,13 @@ func TestGuestFilesMaxEntriesIsBounded(t *testing.T) {
 	}
 	if MaxEntriesCeiling != 10_000_000 {
 		t.Errorf("the documented ceiling is 10,000,000, got %d", MaxEntriesCeiling)
+	}
+}
+
+// jobspec cannot import internal/archive (it is compiled to WebAssembly), so it mirrors the limits.
+func TestEntryLimitsMirrorArchive(t *testing.T) {
+	if MaxEntriesCeiling != archive.MaxEntriesCeiling || DefaultMaxEntries != archive.DefaultMaxEntries {
+		t.Errorf("jobspec limits %d/%d drifted from archive %d/%d",
+			DefaultMaxEntries, MaxEntriesCeiling, archive.DefaultMaxEntries, archive.MaxEntriesCeiling)
 	}
 }

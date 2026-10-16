@@ -104,7 +104,7 @@ export async function startDemo(): Promise<string | null> {
   const dir = join(STATE, 'demo')
   await freePortCheck(DEMO_PORT)
   const log = openSync(join(STATE, 'demo.log'), 'a')
-  const args = ['-dir', dir, '-reset', '-profile', 'test', '-web', `127.0.0.1:${DEMO_PORT}`, '-ui-dir', join(ROOT, 'internal', 'server', 'webui', 'dist'), '-minio', '']
+  const args = ['-dir', dir, '-reset', '-profile', 'test', '-web', `127.0.0.1:${DEMO_PORT}`, '-ui-dir', join(ROOT, 'internal', 'server', 'webui', 'dist'), '-s3=false']
   const p = spawn(DEMO_BIN, args, { stdio: ['ignore', log, log], env: { ...process.env } })
   procs.push(p)
   await waitFor(`${DEMO_URL}/api/v1/ping`, 240_000, 'ibdemo')

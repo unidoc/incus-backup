@@ -11,6 +11,9 @@ vectors are untouched, and the compressed chunk encoding is now pinned too
 
 * 4 vCPU of an AMD Ryzen 9 3900 (QEMU VM), 16 GB RAM, one virtual disk (`/tmp` on overlayfs),
   Linux 6.18, Go 1.26.8, MinIO (single node, filesystem mode, same machine), embedded PostgreSQL.
+  (MinIO is gone from the test setup: its server is no longer distributed. All numbers in this document are
+  historical MinIO measurements; `just bench` now runs against the in-process S3 fake, or any real service via
+  `INCUS_BACKUP_TEST_S3_*`, so new numbers are not comparable with these.)
 * The machine was **shared with several other build/test agents** the whole time: load averages
   of 6 to 70 on 4 cores. Wall-clock numbers are therefore noisy (spreads are given where several
   runs exist). The evidence that does not depend on the load is the **request counts**
@@ -371,8 +374,8 @@ The migration runner wraps each file in a transaction, so the indexes are built 
 
 ## Rerunning
 
-`just bench` (about 30 minutes) and `just bench-big` (several hours) run everything above; both need MinIO and
-PostgreSQL like the tests (`INCUS_BACKUP_TEST_MINIO`, embedded PostgreSQL) and fail without them.
+`just bench` (about 30 minutes) and `just bench-big` (several hours) run everything above; both need PostgreSQL
+like the tests (embedded PostgreSQL); S3 is the in-process fake unless `INCUS_BACKUP_TEST_S3_*` names a real service.
 Sizes come from `INCUS_BACKUP_BENCH_N`, `_RTT`, `_PAR`, `_PRESENCE`, `_UPLOAD_MB`, `_WORKERS`, `_STORE`,
 `_IDS`, `_FILES`, `_ENTRIES`, `_DIR`, `_FSDIR` (see the benchmark files). For a before/after comparison
 copy the `*_bench_test.go` files into an old tree (the datastore and engine benchmarks use two small

@@ -59,9 +59,18 @@ type sessionView struct {
 	Enrol2FA bool `json:"enrol_2fa_required,omitempty"`
 }
 
+// sendCookie sets a cookie that is Secure unless the server was started for plain HTTP (the demo,
+// Server.Secure == false): the downgrade is the explicit exception, not the default.
+func (s *Server) sendCookie(w http.ResponseWriter, c *http.Cookie) {
+	c.Secure = true
+	if !s.Secure {
+		c.Secure = false
+	}
+	http.SetCookie(w, c)
+}
+
 func (s *Server) setCookie(w http.ResponseWriter, tok string, exp time.Time) {
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: tok, Path: "/", HttpOnly: true, Secure: s.Secure,
-		SameSite: http.SameSiteStrictMode, Expires: exp})
+	s.sendCookie(w, &http.Cookie{Name: cookieName, Value: tok, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Expires: exp})
 }
 
 // selfName returns the signed-in user's name; the local admin and tokens have no "me".

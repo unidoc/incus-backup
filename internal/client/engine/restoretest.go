@@ -245,7 +245,8 @@ func (e *Engine) rtExtract(ctx context.Context, loc *Located, o RestoreTestOptio
 		return public(err, "cannot create the scratch area")
 	}
 	need := loc.Index.Size
-	if p, err := strconv.ParseUint(loc.Manifest.Meta[MetaFSPayload], 10, 64); err == nil {
+	// 63 bits: the payload size is later used as an int64 (progress), so a larger number is not a size
+	if p, err := strconv.ParseUint(loc.Manifest.Meta[MetaFSPayload], 10, 63); err == nil {
 		need = p
 	}
 	var st unix.Statfs_t

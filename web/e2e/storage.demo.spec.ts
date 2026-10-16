@@ -1,6 +1,6 @@
 // Storage and protection configuration against the seeded demo server (the real server stack):
 // repositories (list, detail tabs, create on a filesystem in a temp dir, S3 failure messaging and a
-// real S3 repository on a private MinIO), maintenance mode, schedules, tasks (verify, retention preview,
+// real S3 repository on the in-process S3 test server (cmd/ibs3)), maintenance mode, schedules, tasks (verify, retention preview,
 // GC dry run), policies (editor, preview, assignments, delete impact), sync (wizard with a real token,
 // run, remove), role gating, and screenshots light/dark x desktop/phone into e2e/screenshots/.
 // The demo is started with --reset for every run (backend.ts), so the repositories, policies and sync
@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { DEMO_PASSWORD } from './backend'
 import { shot, setTheme, watchConsole } from './helpers'
-import { makeBucket, startMinio, type Minio } from './minio'
+import { startS3, type S3 } from './s3'
 
 test.describe.configure({ mode: 'serial' })
 test.setTimeout(120_000)
@@ -105,9 +105,9 @@ test('create a filesystem repository: path checks, then the real create (temp di
   con.assertClean()
 })
 
-test('S3: probe failures are explained; a real S3 repository on MinIO; the secret never comes back', async ({ page }) => {
+test('S3: probe failures are explained; a real S3 repository on the S3 test server; the secret never comes back', async ({ page }) => {
   const con = watchConsole(page)
-  let minio: Minio | null = null
+  let s3: S3 | null = null
   try {
     await login(page, 'admin')
     await page.goto('/repositories/new')
@@ -128,13 +128,12 @@ test('S3: probe failures are explained; a real S3 repository on MinIO; the secre
     await shot(page, 'storage-s3-probe-fail-desktop-light')
 
     // now a real service
-    minio = await startMinio()
-    await makeBucket(minio, 'ib-e2e')
+    s3 = await startS3('ib-e2e')
     await page.getByRole('button', { name: 'Back' }).click()
-    await page.getByTestId('s3-endpoint').fill(minio.endpoint)
+    await page.getByTestId('s3-endpoint').fill(s3.endpoint)
     await page.getByTestId('s3-bucket').fill('ib-e2e')
-    await page.getByTestId('s3-access').fill(minio.access)
-    await page.getByTestId('s3-secret').locator('input').fill(minio.secret)
+    await page.getByTestId('s3-access').fill(s3.access)
+    await page.getByTestId('s3-secret').locator('input').fill(s3.secret)
     await page.getByTestId('test').click()
     await expect(page.getByTestId('ready')).toBeVisible()
     for (const id of ['connect', 'put', 'conditional', 'get', 'stat', 'list', 'delete', 'versioning', 'lifecycle', 'object-lock']) {
@@ -146,9 +145,9 @@ test('S3: probe failures are explained; a real S3 repository on MinIO; the secre
     await page.getByTestId('add').click()
     await expect(page).toHaveURL(new RegExp(`/repositories/${S3_REPO}`))
     // the secret is gone from the page and never returned by the API
-    expect(await page.content()).not.toContain(minio.secret)
+    expect(await page.content()).not.toContain(s3.secret)
     const creds = await apiCall(page, 'GET', '/credentials')
-    expect(JSON.stringify(creds.body)).not.toContain(minio.secret)
+    expect(JSON.stringify(creds.body)).not.toContain(s3.secret)
     expect(creds.body.find((c: { name: string }) => c.name === `${S3_REPO}-s3`).used_by).toEqual([S3_REPO])
     // attaching the same prefix again is refused up front: this server already uses it
     await page.goto('/repositories/new')
@@ -156,7 +155,7 @@ test('S3: probe failures are explained; a real S3 repository on MinIO; the secre
     await page.getByTestId('purpose-attach').check()
     await page.getByTestId('kind-s3').check()
     await page.getByTestId('next').click()
-    await page.getByTestId('s3-endpoint').fill(minio.endpoint)
+    await page.getByTestId('s3-endpoint').fill(s3.endpoint)
     await page.getByTestId('s3-bucket').fill('ib-e2e')
     await page.getByRole('switch', { name: 'HTTPS' }).click()
     await page.getByLabel('Use a stored credential').check()
@@ -165,7 +164,7 @@ test('S3: probe failures are explained; a real S3 repository on MinIO; the secre
     await expect(list.locator('[data-check=attached]')).toContainText(S3_REPO)
     con.assertClean()
   } finally {
-    minio?.stop()
+    s3?.stop()
   }
 })
 

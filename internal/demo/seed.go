@@ -237,7 +237,7 @@ func (sd *seeder) setup() error {
 	if s.S3Endpoint != "" {
 		if _, err := s.Svc.AddS3Repository(ctx, "offsite", service.S3Params{
 			S3Settings: service.S3Settings{Endpoint: s.S3Endpoint, Bucket: "offsite", Prefix: "ib", NoTLS: true, PathStyle: true},
-			AccessKey:  minioAccess, SecretKey: minioSecret}); err != nil {
+			AccessKey:  s3Access, SecretKey: s3Secret}); err != nil {
 			return fmt.Errorf("S3 repository: %w", err)
 		}
 		sd.offsite = "s3"

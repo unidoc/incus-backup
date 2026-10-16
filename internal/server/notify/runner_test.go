@@ -397,7 +397,7 @@ func TestCertsRestoreTestsWiring(t *testing.T) {
 
 func TestRepositoryUnreachableFakeProbe(t *testing.T) {
 	e := newEnv(t)
-	// pretend the repository is an S3 one (the probe is faked here; the MinIO test uses the real one)
+	// pretend the repository is an S3 one (the probe is faked here; the S3 test uses the real one)
 	e.exec(`UPDATE repositories SET backend='s3'`)
 	var mu sync.Mutex
 	fail := true
@@ -962,9 +962,9 @@ func TestHubNonBlocking(t *testing.T) {
 	e.eng.Unsubscribe(sub)
 }
 
-// The real probe against real S3 (MinIO): reachable -> no alert; endpoint broken -> alert after
+// The real probe against real S3 (the test service): reachable -> no alert; endpoint broken -> alert after
 // two failed probes ten minutes apart; fixed -> resolved.
-func TestRepositoryUnreachableMinIO(t *testing.T) {
+func TestRepositoryUnreachableS3(t *testing.T) {
 	e := newEnv(t)
 	s3c, bucket := s3test.NewBucket(t)
 	repo, err := e.svc.CreateS3Repository(e.ctx, "offsite", datastore.S3Config{Endpoint: s3c.Endpoint, Bucket: bucket, Prefix: "ib",
@@ -977,7 +977,7 @@ func TestRepositoryUnreachableMinIO(t *testing.T) {
 	e.tick()
 	var ok bool
 	if err := e.d.Pool().QueryRow(e.ctx, `SELECT ok FROM notify_probe_state WHERE repository_id=$1`, repo.ID).Scan(&ok); err != nil || !ok {
-		t.Fatalf("real probe of a healthy MinIO: ok=%v %v", ok, err)
+		t.Fatalf("real probe of a healthy S3 service: ok=%v %v", ok, err)
 	}
 	var good json.RawMessage
 	_ = e.d.Pool().QueryRow(e.ctx, `SELECT s3_settings FROM repositories WHERE id=$1`, repo.ID).Scan(&good)

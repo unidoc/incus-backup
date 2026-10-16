@@ -9,7 +9,6 @@ import (
 	"testing"
 
 	"github.com/minio/minio-go/v7"
-	"github.com/minio/minio-go/v7/pkg/credentials"
 	"github.com/minio/minio-go/v7/pkg/lifecycle"
 
 	"github.com/unidoc/incus-backup/internal/s3test"
@@ -117,15 +116,7 @@ func TestCheckFilesystemSettingsExplainsAndCreatesNothing(t *testing.T) {
 	}
 }
 
-func minioClient(t *testing.T, c s3test.Config) *minio.Client {
-	t.Helper()
-	ep := strings.TrimPrefix(strings.TrimPrefix(c.Endpoint, "https://"), "http://")
-	cl, err := minio.New(ep, &minio.Options{Creds: credentials.NewStaticV4(c.AccessKey, c.SecretKey, ""), Secure: !c.NoTLS})
-	if err != nil {
-		t.Fatal(err)
-	}
-	return cl
-}
+func s3Client(t *testing.T, c s3test.Config) *minio.Client { return s3test.Client(t, c) }
 
 // The S3 check runs every probe step, finds an existing repository and its owner, and warns about
 // bucket settings that cost space or destroy chunks (versioning, lifecycle expiry, object lock).
@@ -145,13 +136,13 @@ func TestCheckS3SettingsProbesAndWarnsAboutBucketConfig(t *testing.T) {
 		}
 	}
 	if levelOf(rep, "tls") != "warn" || !rep.Ready {
-		t.Fatalf("plain-HTTP MinIO must be a warning, not a failure: %+v", rep.Checks)
+		t.Fatalf("plain-HTTP S3 must be a warning, not a failure: %+v", rep.Checks)
 	}
 	if cs, _ := e.svc.Credentials(ctx); len(cs) != 0 {
 		t.Fatal("the check stored a credential")
 	}
 	// nothing was written but the probe's scratch object, which is gone again
-	cl := minioClient(t, svc)
+	cl := s3Client(t, svc)
 	for o := range cl.ListObjects(ctx, bucket, minio.ListObjectsOptions{Recursive: true}) {
 		t.Errorf("object left behind: %s", o.Key)
 	}
@@ -254,7 +245,7 @@ func TestCheckRepositoryHonoursMaintenanceMode(t *testing.T) {
 	if err := json.Unmarshal(e.repo.S3Raw, &set); err != nil {
 		t.Fatal(err)
 	}
-	cl := minioClient(t, s3test.Service(t))
+	cl := s3Client(t, s3test.Service(t))
 	if err := cl.EnableVersioning(ctx, set.Bucket); err != nil {
 		t.Fatal(err)
 	}

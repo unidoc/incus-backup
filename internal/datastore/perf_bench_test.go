@@ -1,6 +1,6 @@
 package datastore
 
-// Benchmarks of the repository's request patterns against a real S3 service (MinIO) behind a
+// Benchmarks of the repository's request patterns against an S3 service (the in-process fake by default) behind a
 // TCP delay line (internal/bench), so the cost of one request round trip is visible on one machine.
 // They are the measurements behind docs/performance.md; `just bench` runs them.
 //

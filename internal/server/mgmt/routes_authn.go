@@ -273,7 +273,7 @@ func (s *Server) authnRoutes(h routeFn) {
 			ssoFail(w, r, "failed")
 			return
 		}
-		http.SetCookie(w, &http.Cookie{Name: "ib_oidc", Value: browser, Path: "/api/v1/auth/oidc/", HttpOnly: true, Secure: s.Secure,
+		s.sendCookie(w, &http.Cookie{Name: "ib_oidc", Value: browser, Path: "/api/v1/auth/oidc/", HttpOnly: true,
 			SameSite: http.SameSiteLaxMode, MaxAge: int(auth.LoginTTL / time.Second)}) // Lax: it must come back on the IdP's redirect
 		http.Redirect(w, r, u, http.StatusFound)
 	})
@@ -287,7 +287,7 @@ func (s *Server) authnRoutes(h routeFn) {
 		if c, err := r.Cookie("ib_oidc"); err == nil {
 			browser = c.Value
 		}
-		http.SetCookie(w, &http.Cookie{Name: "ib_oidc", Value: "", Path: "/api/v1/auth/oidc/", HttpOnly: true, Secure: s.Secure, SameSite: http.SameSiteLaxMode, MaxAge: -1})
+		s.sendCookie(w, &http.Cookie{Name: "ib_oidc", Value: "", Path: "/api/v1/auth/oidc/", HttpOnly: true, SameSite: http.SameSiteLaxMode, MaxAge: -1})
 		sess, next, err := s.oidcSvc().FinishLogin(r.Context(), name, q.Get("state"), q.Get("code"), q.Get("error"), browser,
 			s.redirectBase(r)+"/api/v1/auth/oidc/"+name+"/callback", clientIP(r), r.UserAgent())
 		if err != nil {

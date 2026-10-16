@@ -134,6 +134,8 @@ const (
 	maxLoginName  = 256            // a user name is at most 64 bytes (validName); longer is refused before any lookup
 )
 
+// ghostKey is the map key of the lockout entry for a login NAME (lower-cased), never a password: SHA-256 only
+// bounds the memory of names an attacker can make up. Passwords are hashed with Argon2id (see below).
 func ghostKey(name string) [32]byte { return sha256.Sum256([]byte(strings.ToLower(name))) }
 
 func (g *ghostLocks) locked(name string, now time.Time) bool {
@@ -249,7 +251,10 @@ func randToken(n int) string {
 	return base64.RawURLEncoding.EncodeToString(b)
 }
 
-func hashToken(t string) []byte { h := sha256.Sum256([]byte(t)); return h[:] }
+// hashToken is the stored lookup form of a randomly generated, high-entropy bearer secret (session id,
+// API token, one-time ticket; 256 bits from randToken). A fast hash is right for those: there is nothing to
+// brute-force. It is never applied to a user's password, which is hashed with Argon2id.
+func hashToken(secret string) []byte { h := sha256.Sum256([]byte(secret)); return h[:] }
 
 // ---- passwords ---------------------------------------------------------------------------
 

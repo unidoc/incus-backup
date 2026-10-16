@@ -111,10 +111,6 @@ func (w *webClient) raw(path string) []byte {
 // shows every seeded situation and that a filesystem snapshot can be browsed and decrypted in the
 // browser's way (raw index, manifest and chunks, opened with the printed recovery key only).
 func TestDemoSeedsEverySituationAndServesItOverTheRealWebFlow(t *testing.T) {
-	minioBin := os.Getenv("INCUS_BACKUP_TEST_MINIO")
-	if minioBin == "" {
-		t.Fatal("INCUS_BACKUP_TEST_MINIO must name a MinIO binary: the demo's second repository is an S3 one")
-	}
 	dir, err := os.MkdirTemp("", "ibdemo-test-*")
 	if err != nil {
 		t.Fatal(err)
@@ -122,7 +118,7 @@ func TestDemoSeedsEverySituationAndServesItOverTheRealWebFlow(t *testing.T) {
 	defer os.RemoveAll(dir)
 	ctx := context.Background()
 	began := time.Now()
-	st, err := Start(ctx, Options{Dir: dir, Web: "127.0.0.1:0", Seed: true, Profile: TestProfile(), Minio: minioBin,
+	st, err := Start(ctx, Options{Dir: dir, Web: "127.0.0.1:0", Seed: true, Profile: TestProfile(), S3: true,
 		Socket: filepath.Join(dir, "a.sock")})
 	if err != nil {
 		t.Fatal(err)
@@ -442,7 +438,7 @@ func TestDemoSeedsEverySituationAndServesItOverTheRealWebFlow(t *testing.T) {
 	// a restart finds the seeded directory again (same ports for the stored S3 endpoint and sync peer)
 	st.Close()
 	t1 := time.Now()
-	st2, err := Start(ctx, Options{Dir: dir, Web: "127.0.0.1:0", Seed: true, Profile: TestProfile(), Minio: minioBin, Socket: filepath.Join(dir, "a.sock")})
+	st2, err := Start(ctx, Options{Dir: dir, Web: "127.0.0.1:0", Seed: true, Profile: TestProfile(), S3: true, Socket: filepath.Join(dir, "a.sock")})
 	if err != nil {
 		t.Fatalf("restart: %v", err)
 	}
@@ -504,10 +500,6 @@ func (w *webClient) job(who string, req map[string]any) *jobs.Job {
 // (the e2e test compares them file by file). At 22:47 the evening churn of "today" has no night backup
 // after it, which the seed used to leave behind as edited files that are not in any snapshot.
 func TestSeedKeepsTheVolumeTreeEqualToItsLatestSnapshotAtAnyHour(t *testing.T) {
-	minioBin := os.Getenv("INCUS_BACKUP_TEST_MINIO")
-	if minioBin == "" {
-		t.Fatal("INCUS_BACKUP_TEST_MINIO must name a MinIO binary: the demo's second repository is an S3 one")
-	}
 	old := seedNow
 	defer func() { seedNow = old }()
 	today := time.Now().UTC().Truncate(24 * time.Hour)
@@ -518,7 +510,7 @@ func TestSeedKeepsTheVolumeTreeEqualToItsLatestSnapshotAtAnyHour(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		st, err := Start(context.Background(), Options{Dir: dir, Web: "127.0.0.1:0", Seed: true, Profile: TestProfile(), Minio: minioBin,
+		st, err := Start(context.Background(), Options{Dir: dir, Web: "127.0.0.1:0", Seed: true, Profile: TestProfile(), S3: true,
 			Socket: filepath.Join(dir, "a.sock")})
 		if err == nil {
 			st.Close()

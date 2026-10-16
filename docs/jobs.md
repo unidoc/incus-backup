@@ -1,7 +1,7 @@
 # Host jobs and restore tests
 
 Status: implemented (2026-10-08). Tested against real PostgreSQL, a real mutual-TLS server
-(`testsupport.Node`), the filesystem and S3 (MinIO) datastores, and the fake Incus. Not yet run
+(`testsupport.Node`), the filesystem and S3 (in-process S3 test server) datastores, and the fake Incus. Not yet run
 against a real Incus host (see "Unproven" at the end).
 
 ## Why

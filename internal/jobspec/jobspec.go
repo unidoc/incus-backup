@@ -20,7 +20,6 @@ import (
 	"time"
 	"unicode"
 
-	"github.com/unidoc/incus-backup/internal/archive"
 	"github.com/unidoc/incus-backup/internal/format"
 	"github.com/unidoc/incus-backup/internal/fscat"
 	"github.com/unidoc/incus-backup/internal/recovery"
@@ -69,8 +68,12 @@ const (
 // Limits.
 const (
 	MaxDeliveryBytes = 4 << 30 // a sealed delivery
-	// MaxEntriesCeiling is the hard ceiling of guest_files' max_entries (the default is archive.DefaultMaxEntries).
-	MaxEntriesCeiling = archive.MaxEntriesCeiling
+	// MaxEntriesCeiling is the hard ceiling of guest_files' max_entries. It mirrors archive.MaxEntriesCeiling
+	// (a test pins them together): this package is compiled into the browser's WebAssembly module, which
+	// cannot import internal/archive (it needs x/sys/unix).
+	MaxEntriesCeiling = 10_000_000
+	// DefaultMaxEntries mirrors archive.DefaultMaxEntries, the cap used when max_entries is 0.
+	DefaultMaxEntries = 1_000_000
 	DeliveryTTL       = time.Hour
 	MaxPaths          = 256
 	MaxPathLen        = 4096
@@ -383,7 +386,7 @@ func Validate(typ string, raw []byte) (any, []byte, error) {
 				err = invalid("partition must be 0..128")
 			}
 			if err == nil && (p.MaxEntries < 0 || p.MaxEntries > MaxEntriesCeiling) {
-				err = invalid("max_entries must be 0 (default %d) .. %d", archive.DefaultMaxEntries, MaxEntriesCeiling)
+				err = invalid("max_entries must be 0 (default %d) .. %d", DefaultMaxEntries, MaxEntriesCeiling)
 			}
 			if err == nil {
 				p.Paths, err = paths(p.Paths, recovery.CleanPaths)

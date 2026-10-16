@@ -101,12 +101,12 @@ build() {
 	./build/incus-backup-server completion bash > build/incus-backup-server.bash
 }
 
-# check() runs the test packages that need neither PostgreSQL nor MinIO.
+# check() runs the test packages that need no PostgreSQL (S3 is an in-process fake).
 # The rest (server, datastore S3 backend, client engine, CLIs) start
 # embedded-postgres, which DOWNLOADS a glibc PostgreSQL build at test time:
 # impossible offline in abuild and not runnable on musl anyway, and those
 # tests fail (never skip) without a database by project rule. They must be
-# run with `just test` against a real PostgreSQL + MinIO before a release is
+# run with `just test` against a real PostgreSQL before a release is
 # tagged (no CI workflow enforces that yet; docs/packaging.md). Re-check this list when
 # packages are added: a package missing here is simply not tested by
 # abuild, it does not fail.

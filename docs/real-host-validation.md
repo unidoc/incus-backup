@@ -1,7 +1,7 @@
 # Real-host validation plan (Benfica, Cikarang, real Incus/ZFS, real S3, real network)
 
 All planned core backup functionality is implemented and sandbox-tested (`go test ./...`: real
-PostgreSQL, real MinIO, real mutual TLS, headless Chromium, a faithful fake of Incus). This is the single
+PostgreSQL, an in-process S3 test server (conformance-checked against versitygw), real mutual TLS, headless Chromium, a faithful fake of Incus). This is the single
 plan for what the sandbox cannot prove. Every phase says what to run, what to record and when it passes.
 Stop at the first red result and paste the output back: every `FAIL` names the assumption in the code that
 is wrong.

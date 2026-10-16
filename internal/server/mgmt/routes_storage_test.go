@@ -40,7 +40,7 @@ func TestStorageRoutesRepositoryCheckInfoAndEffectivePolicies(t *testing.T) {
 	if !rep.Ready || rep.Purpose != "create" || levels(rep.Checks)["path"] != "pass" || rep.FreeBytes == nil {
 		t.Fatalf("%+v", rep)
 	}
-	// S3 against MinIO, inline secret: every probe step, and the secret never comes back
+	// S3 (the configured test service), inline secret: every probe step, and the secret never comes back
 	svc, bucket := s3test.NewBucket(t)
 	req := map[string]any{"name": "off", "kind": "s3", "access_key": svc.AccessKey, "secret_key": svc.SecretKey,
 		"s3": map[string]any{"endpoint": svc.Endpoint, "bucket": bucket, "prefix": "ib", "no_tls": svc.NoTLS, "path_style": true}}

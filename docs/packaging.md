@@ -361,12 +361,12 @@ Notes on it:
   `go` is older than `go.mod`. The escape hatch is `export GOTOOLCHAIN=auto`
   plus `options="net"`, as unidoc-incus does.
 * `check()` runs the 13 test packages that need neither PostgreSQL nor
-  MinIO. The others use embedded-postgres, which downloads a glibc
+  an S3 service (the list predates the in-process S3 fake). The others use embedded-postgres, which downloads a glibc
   PostgreSQL at test time: that cannot work offline or on musl, and those
   tests fail rather than skip without a database. They must be run with
-  `just test` against a real PostgreSQL and MinIO. CI does that on every
+  `just test` against a real PostgreSQL. CI does that on every
   push and pull request (`.github/workflows/ci.yml`, with a PostgreSQL
-  service and MinIO), and `release.yml` runs the whole CI workflow on the
+  service; S3 is in-process), and `release.yml` runs the whole CI workflow on the
   tagged commit before it builds anything (`docs/development.md`).
   `checkdepends="tzdata"`: the retention tests load `Europe/Berlin` from
   the system.
