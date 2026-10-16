@@ -9,6 +9,7 @@
 // After every reconnect the bus emits 'resync': views refetch, because events sent while we were
 // away are lost (the server does not replay).
 import { reactive } from 'vue'
+import { visibleTimeout } from '@/lib/poll'
 import { API_BASE } from './client'
 
 export const EVENT_TYPES = ['job', 'alert', 'run', 'repository', 'host', 'task'] as const
@@ -107,7 +108,7 @@ let signedOutHandler: () => void = () => {}
 export function onSignedOut(fn: () => void) { signedOutHandler = fn }
 
 let es: EventSource | null = null
-let timer: ReturnType<typeof setTimeout> | null = null
+let timer: (() => void) | null = null // cancel() of the pending reconnect
 let everOpened = false
 let stopped = true
 let opts: LiveOptions = {}
@@ -121,7 +122,7 @@ export function startLive(o: LiveOptions = {}) {
 
 export function stopLive() {
   stopped = true
-  if (timer) clearTimeout(timer)
+  timer?.()
   timer = null
   es?.close()
   es = null
@@ -171,7 +172,9 @@ function connect() {
     live.state = live.failures >= 3 ? 'offline' : 'reconnecting'
     const delay = backoff(live.failures)
     live.retryIn = delay
-    timer = setTimeout(async () => {
+    // not while hidden: opening GET /events authenticates the cookie as activity and would renew the
+    // session. The reconnect waits for the tab to become visible; its 'resync' then refetches the views.
+    timer = visibleTimeout(async () => {
       timer = null
       if (live.failures >= 3 && opts.checkSession) {
         const ok = await opts.checkSession().catch(() => true) // network error: keep trying
@@ -185,7 +188,7 @@ function connect() {
 /** Reconnect immediately (the user clicked the connection indicator). */
 export function reconnectNow() {
   if (stopped) return
-  if (timer) clearTimeout(timer)
+  timer?.()
   timer = null
   es?.close()
   es = null

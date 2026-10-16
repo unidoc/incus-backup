@@ -364,14 +364,14 @@ func applyMeta(p string, e *Entry, link bool, o ExtractOptions) error {
 	if fi, err := os.Lstat(p); err != nil || (!link && fi.Mode()&os.ModeSymlink != 0) {
 		return fmt.Errorf("%s is a symlink or vanished: refusing to apply metadata through it", p)
 	}
-	owned := !o.NoChown
+	owned, chownSkipped := !o.NoChown, false
 	if owned {
 		if err := lchown(p, int(e.UID), int(e.GID)); err != nil {
 			if !o.Lenient || !tolerable(err) {
 				return fmt.Errorf("chown %s: %w", p, err)
 			}
 			o.Skips.add(fmt.Sprintf("chown %d:%d %s: %v", e.UID, e.GID, filepath.Base(p), err))
-			owned = false
+			owned, chownSkipped = false, true
 		}
 	}
 	for _, x := range e.Xattrs {
@@ -385,7 +385,7 @@ func applyMeta(p string, e *Entry, link bool, o ExtractOptions) error {
 			continue
 		}
 		if err := lsetxattr(p, x.Name, x.Value, 0); err != nil {
-			if errors.Is(err, unix.ENOTSUP) || (errors.Is(err, unix.EPERM) && o.NoChown) {
+			if (!o.Lenient && errors.Is(err, unix.ENOTSUP)) || (errors.Is(err, unix.EPERM) && o.NoChown) {
 				continue
 			}
 			if o.Lenient && tolerable(err) {
@@ -400,7 +400,8 @@ func applyMeta(p string, e *Entry, link bool, o ExtractOptions) error {
 		return unix.UtimesNanoAt(unix.AT_FDCWD, p, ts, unix.AT_SYMLINK_NOFOLLOW)
 	}
 	m := e.Mode
-	if !owned && int(e.UID) != extractingUID() {
+	// a skipped chown restored neither uid nor gid: the file is the daemon's whatever the catalog says
+	if !owned && (chownSkipped || int(e.UID) != extractingUID()) {
 		m &^= 0o4000 // ownership was not restored: never hand the extracting user (root) a setuid file
 		if e.Kind != KDir {
 			m &^= 0o2000 // nor a setgid file (a setgid directory only steers group inheritance)

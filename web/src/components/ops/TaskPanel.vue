@@ -58,8 +58,15 @@ async function poll() {
 }
 
 watch(() => props.id, () => { t.value = null; log.value = []; after = 0; emittedDone = false; void poll() }, { immediate: true })
-const off = bus.onVisible('task', (d) => { if ((d as { id?: string })?.id === props.id && t.value && isActive(t.value)) void poll() })
-onBeforeUnmount(() => { alive = false; off(); ctrl?.abort(); if (cancelTimer) cancelTimer() })
+// Debounced like useJob: a hidden tab replays up to 50 queued events at once when it becomes visible, and each
+// poll() would abort the previous request.
+let debounce: ReturnType<typeof setTimeout> | null = null
+const off = bus.onVisible('task', (d) => {
+  if ((d as { id?: string })?.id !== props.id || !t.value || !isActive(t.value)) return
+  if (debounce) clearTimeout(debounce)
+  debounce = setTimeout(() => { debounce = null; void poll() }, 250)
+})
+onBeforeUnmount(() => { alive = false; off(); ctrl?.abort(); if (cancelTimer) cancelTimer(); if (debounce) clearTimeout(debounce) })
 
 function onScroll() {
   const el = box.value

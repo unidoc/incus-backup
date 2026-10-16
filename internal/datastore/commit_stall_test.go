@@ -3,6 +3,7 @@ package datastore
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
@@ -34,11 +35,18 @@ func TestSlowCommitDoesNotStallOtherSessions(t *testing.T) {
 		}
 		release := make(chan struct{})
 		inHook := make(chan struct{})
+		gcSweeping := make(chan struct{})
+		var hookOnce, gcOnce sync.Once
+		// installed once, before any goroutine starts, and left in place (no concurrent writes to the hook)
 		s.SetFault(func(p string) error {
-			if p == "commit:before-marker" {
-				s.SetFault(nil)
-				close(inHook)
-				<-release // a slow/hung backend write
+			switch p {
+			case "commit:before-marker":
+				hookOnce.Do(func() {
+					close(inHook)
+					<-release // a slow/hung backend write
+				})
+			case "gc:after-mark":
+				gcOnce.Do(func() { close(gcSweeping) })
 			}
 			return nil
 		})
@@ -47,14 +55,20 @@ func TestSlowCommitDoesNotStallOtherSessions(t *testing.T) {
 		<-inHook
 		gcDone := make(chan error, 1)
 		go func() { _, err := s.GC(context.Background(), time.Hour, false); gcDone <- err }()
-		time.Sleep(300 * time.Millisecond) // GC reaches its sweep
-		defer func() {                     // never leave goroutines hung on failure
+		defer func() { // never leave goroutines hung on failure
 			select {
 			case <-release:
 			default:
 				close(release)
 			}
 		}()
+		select { // GC has finished its mark phase and is about to take the sweep lock
+		case <-gcSweeping:
+		case err := <-gcDone:
+			t.Fatalf("gc ended before its sweep: %v", err)
+		case <-time.After(30 * time.Second):
+			t.Fatal("GC never reached its sweep")
+		}
 		within := func(what string, f func()) {
 			t.Helper()
 			d := make(chan struct{})

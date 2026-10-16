@@ -363,7 +363,7 @@ type syncPin struct {
 }
 
 // MaxSyncPinsPerPeer bounds the open sync pins one sync-write host may hold per repository. A pin is
-// released by a commit or after two hours of silence; without a bound a peer could open one per request.
+// released when the transfer's SyncPutSnapshot returns (whatever its outcome) or after two hours of silence; without a bound a peer could open one per request.
 const MaxSyncPinsPerPeer = 8
 
 type syncPeerKey struct{}
@@ -409,7 +409,7 @@ func (s *Service) syncPinFor(ctx context.Context, repo *Repo) (*datastore.Sessio
 			// and releasing it would unprotect its chunks. The peer retries once an older transfer commits
 			// or its pin runs out (two hours of silence).
 			if open >= MaxSyncPinsPerPeer {
-				return nil, fmt.Errorf("%w: this host already has %d open sync transfers into this repository; wait for one to commit (an abandoned transfer is released after two hours)", ErrTooManyRequests, open)
+				return nil, fmt.Errorf("%w: this host already has %d open sync transfers into this repository; wait for one to finish (an abandoned transfer is released after two hours)", ErrTooManyRequests, open)
 			}
 		}
 		p = &syncPin{ds: store.BeginPinSession(), peer: peer, repoID: repo.ID}
@@ -420,9 +420,9 @@ func (s *Service) syncPinFor(ctx context.Context, repo *Repo) (*datastore.Sessio
 	return p.ds, nil
 }
 
-// releaseSyncPin ends the sync pin of the transfer ctx belongs to (called when a synchronised snapshot has
-// committed: from then on its chunks are protected by the snapshot itself, and the pin set must not grow
-// for ever). Other transfers into the same repository keep their pins.
+// releaseSyncPin ends the sync pin of the transfer ctx belongs to (called when SyncPutSnapshot returns, on any
+// outcome: a committed snapshot protects its chunks itself, a refused one leaves orphans the run's next Missing
+// re-pins, and the pin set must not grow for ever). Other transfers into the same repository keep their pins.
 func (s *Service) releaseSyncPin(ctx context.Context, repoID string) {
 	key := syncPinKey(ctx, repoID)
 	s.mu.Lock()

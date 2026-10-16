@@ -32,7 +32,8 @@ so a revoked or expired session ends the stream, but that check does NOT renew i
 The console pauses every timed poll and every event-driven refetch while its tab is hidden
 (`document.visibilityState`; the shared helpers are `web/src/lib/poll.ts` and `EventBus.onVisible`) and
 catches up once when the tab becomes visible again (events that arrived meanwhile are replayed, at most 50
-per subscription). Only the idle watcher's own `GET /session`, sent after the idle limit has already passed,
+per subscription). A dropped event stream reconnects only once the tab is visible, because opening `GET /events`
+counts as activity; the reconnect then triggers a refetch. Only the idle watcher's own `GET /session`, sent after the idle limit has already passed,
 runs in a hidden tab. So a **visible** tab that keeps polling or refetching stays signed in (a console on a wall
 screen is meant to), and a **hidden** or forgotten tab reaches the 30-minute idle timeout. The 12-hour
 absolute limit applies to both.

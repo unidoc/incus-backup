@@ -132,7 +132,7 @@ func TestSyncedCommitTimeIsBoundedBySnapshotIDTime(t *testing.T) {
 
 // A peer chooses its transfer ids: it may hold at most MaxSyncPinsPerPeer pins per repository. Beyond
 // that it is refused (releasing the oldest could unprotect a transfer that is still sending), other
-// peers and local transfers are unaffected, a commit or the reaper frees a slot.
+// peers and local transfers are unaffected, the end of a snapshot put or the reaper frees a slot.
 func TestSyncPinsPerPeerAreCapped(t *testing.T) {
 	e := newEnv(t)
 	ctx := context.Background()
@@ -212,5 +212,58 @@ func TestWriterConflictNamesTheHolder(t *testing.T) {
 	_, err = e.svc.BeginSession(ctx, b, k.DomainID, req(3))
 	if err == nil || strings.Contains(err.Error(), "by sync") || !strings.Contains(err.Error(), "the server") {
 		t.Fatalf("a hostless holder must not be called sync: %v", err)
+	}
+}
+
+// One sync run is one fresh transfer id. A run that ends on a repair (the snapshot is already there) or on a
+// refusal must not keep its pin for two hours, or an ordinary peer locks itself out after
+// MaxSyncPinsPerPeer such runs.
+func TestSyncPutSnapshotReleasesPinOnEveryOutcome(t *testing.T) {
+	e := newEnv(t)
+	ctx := context.Background()
+	k := keys(1)
+	w := e.enrol("peer", api.ScopeSyncWrite)
+	repo, _ := e.svc.SyncHostRepo(ctx, w, api.ScopeSyncWrite)
+	run := func(i int) context.Context {
+		return service.WithSyncPeer(service.WithSyncTransfer(ctx, w.ID+"/"+fmt.Sprintf("%024x", i)), w.ID)
+	}
+	short := func(err error) string {
+		switch {
+		case err == nil:
+			return "ok"
+		case errors.Is(err, service.ErrTooManyRequests):
+			return "429"
+		case errors.Is(err, service.ErrBadRequest):
+			return "400"
+		}
+		return err.Error()
+	}
+	send := func(c context.Context, idHex string, blob []byte, put api.SyncSnapshotPut) error {
+		if _, err := e.svc.SyncMissing(c, repo, []string{idHex}); err != nil {
+			return err
+		}
+		if err := e.svc.SyncPutChunk(c, repo, idHex, blob); err != nil {
+			return err
+		}
+		return e.svc.SyncPutSnapshot(c, repo, k.DomainID, put)
+	}
+	at := e.now.Add(-time.Hour)
+	id, blob, put := syncSnapshotPut(t, k, snapID(at, 1), at, at, "repaired chunk")
+	if err := send(run(0), id.String(), blob, put); err != nil {
+		t.Fatalf("first sync of the snapshot: %v", err)
+	}
+	var repair, refused []string
+	for i := 1; i <= 4; i++ { // repair runs: the same snapshot again, accepted as identical
+		repair = append(repair, short(send(run(i), id.String(), blob, put)))
+	}
+	bid, bblob, bad := syncSnapshotPut(t, k, snapID(at, 2), at, at.Add(-48*time.Hour), "refused chunk")
+	for i := 5; i <= 8; i++ { // runs whose snapshot the server refuses (commit time before the id's time)
+		refused = append(refused, short(send(run(i), bid.String(), bblob, bad)))
+	}
+	nid, nblob, nput := syncSnapshotPut(t, k, snapID(at, 3), at, at, "new chunk")
+	next := short(send(run(9), nid.String(), nblob, nput))
+	got := fmt.Sprintf("repair runs %v | refused runs %v | next healthy run %s", repair, refused, next)
+	if want := "repair runs [ok ok ok ok] | refused runs [400 400 400 400] | next healthy run ok"; got != want {
+		t.Fatalf("got  %s\nwant %s", got, want)
 	}
 }
