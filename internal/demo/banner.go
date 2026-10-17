@@ -20,7 +20,7 @@ func (s *Stack) Banner(startup time.Duration) string {
 	fmt.Fprintf(&b, " Agent API      https://%s   (mutual TLS, hosts and sync peers)\n", s.AgentAddr)
 	fmt.Fprintf(&b, " Admin socket   %s   (curl --unix-socket %s http://x/api/v1/overview)\n", s.SocketPath, s.SocketPath)
 	if s.S3Endpoint != "" {
-		fmt.Fprintf(&b, " MinIO (S3)     http://%s   access %s / secret %s, bucket offsite\n", s.S3Endpoint, minioAccess, minioSecret)
+		fmt.Fprintf(&b, " S3 (built-in)  http://%s   access %s / secret %s, bucket offsite\n", s.S3Endpoint, s3Access, s3Secret)
 	}
 	fmt.Fprintf(&b, " Data dir       %s\n", s.Opt.Dir)
 	fmt.Fprintf(&b, "\n Users (password for all: %s)\n", s.Opt.Password)

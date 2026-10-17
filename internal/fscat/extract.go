@@ -11,6 +11,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 
 	"golang.org/x/sys/unix"
@@ -85,6 +86,57 @@ type ExtractOptions struct {
 	// SkipDevices creates no character/block device nodes (fifos are still created): for extracting
 	// an untrusted catalog as root into a scratch directory.
 	SkipDevices bool
+	// Lenient is for extracting a GUEST catalog on the host while restoring ownership (the host daemon,
+	// root): a catalog uid/gid or xattr the host kernel refuses (Lchown/Lsetxattr failing with EPERM, EINVAL
+	// or ENOTSUP: a user namespace, a rootless daemon, an LSM) is skipped and recorded in Skips instead of
+	// aborting the extraction, and security.* and trusted.* xattrs are never applied (they describe the
+	// guest's LSM/capability state, not the host's). user.* and system.posix_acl_* are kept. A file whose
+	// chown was skipped loses its set-id bits. The CLI (`fs extract`, `restore instance`) is not Lenient:
+	// there the operator asked for the catalog as recorded and any failure is an error. Lenient needs Skips.
+	Lenient bool
+	// Skips collects what Lenient skipped.
+	Skips *Skips
+}
+
+// Skips records the ownership and xattr operations a Lenient extraction skipped: how many, and the first few.
+type Skips struct {
+	mu    sync.Mutex
+	Count int
+	First []string // at most maxSkipExamples
+}
+
+const maxSkipExamples = 5
+
+func (k *Skips) add(msg string) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.Count++
+	if len(k.First) < maxSkipExamples {
+		k.First = append(k.First, msg)
+	}
+}
+
+// Summary is a one-line description for a job result or log ("" when nothing was skipped).
+func (k *Skips) Summary() string {
+	if k == nil {
+		return ""
+	}
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	if k.Count == 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d ownership/xattr operation(s) refused by the host were skipped (first: %s)", k.Count, strings.Join(k.First, "; "))
+}
+
+// seams for tests: the syscalls whose failure Lenient tolerates.
+var (
+	lchown    = os.Lchown
+	lsetxattr = unix.Lsetxattr
+)
+
+func tolerable(err error) bool {
+	return errors.Is(err, unix.EPERM) || errors.Is(err, unix.EINVAL) || errors.Is(err, unix.ENOTSUP)
 }
 
 func safePath(root, name string) (string, error) {
@@ -122,6 +174,9 @@ type item struct {
 
 // Extract writes the selected part of the tree below dest (which must exist).
 func (t *Tree) Extract(dest string, pay Payload, o ExtractOptions) error {
+	if o.Lenient && o.Skips == nil {
+		return errors.New("fscat: Lenient extraction needs Skips to record what it skipped")
+	}
 	selected := map[string]bool{}
 	for _, p := range o.Paths {
 		c, err := CleanPath(p)
@@ -309,19 +364,32 @@ func applyMeta(p string, e *Entry, link bool, o ExtractOptions) error {
 	if fi, err := os.Lstat(p); err != nil || (!link && fi.Mode()&os.ModeSymlink != 0) {
 		return fmt.Errorf("%s is a symlink or vanished: refusing to apply metadata through it", p)
 	}
-	if !o.NoChown {
-		if err := os.Lchown(p, int(e.UID), int(e.GID)); err != nil {
-			return fmt.Errorf("chown %s: %w", p, err)
+	owned, chownSkipped := !o.NoChown, false
+	if owned {
+		if err := lchown(p, int(e.UID), int(e.GID)); err != nil {
+			if !o.Lenient || !tolerable(err) {
+				return fmt.Errorf("chown %s: %w", p, err)
+			}
+			o.Skips.add(fmt.Sprintf("chown %d:%d %s: %v", e.UID, e.GID, filepath.Base(p), err))
+			owned, chownSkipped = false, true
 		}
 	}
 	for _, x := range e.Xattrs {
+		if o.Lenient && (strings.HasPrefix(x.Name, "security.") || strings.HasPrefix(x.Name, "trusted.")) {
+			o.Skips.add(fmt.Sprintf("%s on %s: guest-only attribute", x.Name, filepath.Base(p)))
+			continue
+		}
 		if o.NoChown && (strings.HasPrefix(x.Name, "security.") || strings.HasPrefix(x.Name, "trusted.")) {
 			// ownership was not restored: security.capability and friends would land on a file the
 			// extracting user owns (as GNU tar without --same-owner, they are not applied)
 			continue
 		}
-		if err := unix.Lsetxattr(p, x.Name, x.Value, 0); err != nil {
-			if errors.Is(err, unix.ENOTSUP) || (errors.Is(err, unix.EPERM) && o.NoChown) {
+		if err := lsetxattr(p, x.Name, x.Value, 0); err != nil {
+			if (!o.Lenient && errors.Is(err, unix.ENOTSUP)) || (errors.Is(err, unix.EPERM) && o.NoChown) {
+				continue
+			}
+			if o.Lenient && tolerable(err) {
+				o.Skips.add(fmt.Sprintf("%s on %s: %v", x.Name, filepath.Base(p), err))
 				continue
 			}
 			return fmt.Errorf("setxattr %s on %s: %w", x.Name, p, err)
@@ -332,7 +400,8 @@ func applyMeta(p string, e *Entry, link bool, o ExtractOptions) error {
 		return unix.UtimesNanoAt(unix.AT_FDCWD, p, ts, unix.AT_SYMLINK_NOFOLLOW)
 	}
 	m := e.Mode
-	if o.NoChown && int(e.UID) != extractingUID() {
+	// a skipped chown restored neither uid nor gid: the file is the daemon's whatever the catalog says
+	if !owned && (chownSkipped || int(e.UID) != extractingUID()) {
 		m &^= 0o4000 // ownership was not restored: never hand the extracting user (root) a setuid file
 		if e.Kind != KDir {
 			m &^= 0o2000 // nor a setgid file (a setgid directory only steers group inheritance)

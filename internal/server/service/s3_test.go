@@ -81,7 +81,7 @@ func TestS3SecretIsSealedAndNeverReadBack(t *testing.T) {
 	if err := e.svc.DB.Pool().QueryRow(ctx, `SELECT c.sealed, r.s3_settings::text FROM credentials c JOIN repositories r ON r.credential_id=c.id WHERE r.name='custody'`).Scan(&sealed, &settings); err != nil {
 		t.Fatal(err)
 	}
-	// The credentials of whichever S3 service the tests use (s3test: a MinIO it started, or
+	// The credentials of whichever S3 service the tests use (s3test: the in-process fake, or
 	// INCUS_BACKUP_TEST_S3_*), never hard-coded ones.
 	creds := s3test.Service(t)
 	for _, blob := range []string{string(sealed), settings} {

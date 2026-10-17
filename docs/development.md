@@ -12,7 +12,7 @@ packaging details see [`packaging.md`](packaging.md). For validation on a real I
 | Go | exactly the `go` line of `go.mod` (CI: `GOTOOLCHAIN=local`) | everything; also builds the WebAssembly module of `web-crypto/` |
 | Node.js + npm | 22 or 24 (`web/package.json` engines: `>= 22`) | `web/` (Vue 3 + Vite) and `web-crypto/` (TypeScript) |
 | `just` | any | the recipes in `Justfile` |
-| MinIO server binary | see below | every S3 test, the demo's S3 repository, the e2e storage tests |
+| an S3 service | none to install | every S3 test: the in-process fake `internal/s3test/s3fake` is the default (see [`testing-s3.md`](testing-s3.md)) |
 | PostgreSQL 16 | embedded (downloaded by the tests) or any server | every control-plane test |
 | `shellcheck` | 0.9 or newer | `scripts/`, `packaging/` (CI's packaging job) |
 
@@ -20,15 +20,10 @@ packaging details see [`packaging.md`](packaging.md). For validation on a real I
 `internal/fscat/scan.go` use the Linux `syscall.Stat_t` field types without a build tag. Develop in a Linux container or VM
 (the Alpine package and the Incus host are Linux anyway).
 
-**MinIO.** MinIO no longer publishes binaries (`dl.min.io` answers `410 Gone`) and the project is archived.
-Build the pinned version CI uses from source (module proxy and checksum database):
-
-```sh
-GOBIN=$HOME/.local/bin go install github.com/minio/minio@v0.0.0-20260212201848-7aac2a2c5b7c
-export INCUS_BACKUP_TEST_MINIO=$HOME/.local/bin/minio
-```
-
-The version is pinned in `.github/actions/minio/action.yml`.
+**S3.** No external S3 server is needed or used by default: `internal/s3test` serves an in-process fake that
+implements exactly the S3 behaviour the repository relies on, can inject faults, and is kept honest by a
+conformance suite that also runs against a real S3 server. MinIO is not used any more (the project no longer
+distributes or maintains its server). See [`testing-s3.md`](testing-s3.md).
 
 ## Tests and the services they need
 
@@ -45,8 +40,9 @@ silently skips proves nothing.
 |---|---|---|
 | `INCUS_BACKUP_TEST_DATABASE_URL` | `internal/testdb` | a PostgreSQL server where the tests may `CREATE DATABASE` (superuser). Each test gets a fresh database, dropped afterwards. Unset: embedded-postgres is started per test package |
 | `INCUS_BACKUP_PG_CACHE` | `internal/testdb`, `internal/demo`, `web/e2e/backend.ts` | where embedded-postgres keeps the PostgreSQL 16 binaries (default `~/.cache/incus-backup-embedded-postgres`). The demo and the e2e backend **always** use these binaries; they have no URL mode |
-| `INCUS_BACKUP_TEST_S3_ENDPOINT`, `_ACCESS_KEY`, `_SECRET_KEY` | `internal/s3test` | an S3 service (`host:port` is plain HTTP; `https://host:port` is TLS). Each test gets a fresh bucket |
-| `INCUS_BACKUP_TEST_MINIO` | `internal/s3test`, `internal/demo`, `cmd/ibdemo`, `web/e2e/minio.ts` | a MinIO server binary. Without `INCUS_BACKUP_TEST_S3_*`, `internal/s3test` starts it once per test package. `internal/demo`'s test and the e2e storage tests need it in any case |
+| `INCUS_BACKUP_TEST_S3_ENDPOINT`, `_ACCESS_KEY`, `_SECRET_KEY` | `internal/s3test` | unset: the in-process S3 fake. Set: that real S3 service instead (`host:port` is plain HTTP; `https://host:port` is TLS), for the same tests. Each test gets a fresh bucket |
+| `INCUS_BACKUP_TEST_S3_UNSUPPORTED` | `internal/s3test/conformance` | optional features the real service lacks (`versioning`, `lifecycle`, `object-lock`, `multi-delete`, `copy`); the suite then requires the service to refuse them cleanly instead of skipping |
+| `IB_S3_BIN` | `web/e2e/s3.ts` | a built `cmd/ibs3` for the e2e storage test (default: built with `go build`) |
 
 Every package that uses `testdb` or `s3test` has a `TestMain` calling `testdb.Main` (and
 `testdb.AtExit(s3test.Start())` when it needs both). A new package must do the same.
@@ -58,8 +54,10 @@ Other test recipes:
 
 * `just fuzz [seconds]`: short fuzz runs over the format parsers.
 * `just verify-vectors`: independent re-check of `internal/format/testdata/vectors.json` (Python, PyNaCl).
+* `just test-s3`: the S3 fake, its fault injection and the conformance suite with its mutation tests.
+* `just test-s3-real`: the conformance suite and the datastore S3 tests against a real S3 server (versitygw).
 * `just bench` / `just bench-big`: the benchmarks behind [`performance.md`](performance.md). They need
-  MinIO and PostgreSQL like the tests.
+  PostgreSQL like the tests; S3 is the in-process fake unless `INCUS_BACKUP_TEST_S3_*` says otherwise.
 
 ## Everything CI checks, locally: `just ci`
 
@@ -104,7 +102,7 @@ in headless Chromium, which needs a Playwright browser: `cd web && npx playwrigh
 [`dev-demo.md`](dev-demo.md):
 
 ```sh
-INCUS_BACKUP_TEST_MINIO=$HOME/.local/bin/minio go run ./cmd/ibdemo --reset --web 127.0.0.1:8099
+go run ./cmd/ibdemo --reset --web 127.0.0.1:8099
 ```
 
 ## End-to-end tests (Playwright)
@@ -113,7 +111,7 @@ INCUS_BACKUP_TEST_MINIO=$HOME/.local/bin/minio go run ./cmd/ibdemo --reset --web
 cd web
 npx playwright install chromium            # once (CI: --with-deps installs the system libraries too)
 go build -o /tmp/ibdemo ../cmd/ibdemo
-IB_DEMO_BIN=/tmp/ibdemo INCUS_BACKUP_TEST_MINIO=$HOME/.local/bin/minio npm run e2e
+IB_DEMO_BIN=/tmp/ibdemo npm run e2e
 ```
 
 The global setup (`web/e2e/backend.ts`) starts two backends:
@@ -141,11 +139,11 @@ unless every job below succeeded; a skipped or cancelled job counts as a failure
 
 | Job | What it runs | Services |
 |---|---|---|
-| `minio` | builds the pinned MinIO from source once and caches it (`.github/actions/minio`) | |
-| `go` | `scripts/ci.sh fmt vet build test` | PostgreSQL 16 service container (`INCUS_BACKUP_TEST_DATABASE_URL`, default settings), one shared MinIO (`INCUS_BACKUP_TEST_S3_*`), the MinIO binary and the embedded PostgreSQL binaries for `internal/demo` |
-| `race` | `scripts/ci.sh race` | PostgreSQL service; `internal/s3test` starts the MinIO binary per package (the other wiring) |
+| `go` | `scripts/ci.sh fmt vet build test` | PostgreSQL 16 service container (`INCUS_BACKUP_TEST_DATABASE_URL`, default settings) and the embedded PostgreSQL binaries for `internal/demo`; S3 is the in-process fake |
+| `race` | `scripts/ci.sh race` | PostgreSQL service; S3 is the in-process fake |
+| `s3-conformance` | `go test ./internal/s3test/conformance ./internal/datastore` against a real S3 server: versitygw (pinned, built from source, posix backend) via `INCUS_BACKUP_TEST_S3_*` | none besides versitygw, started by the job |
 | `web` | `scripts/ci.sh web` on Node 22 and 24 | |
-| `e2e` | web-crypto + UI build, `npx playwright install --with-deps chromium`, web-crypto's `npm test` (incl. headless Chromium), then Playwright against the real server and the demo; traces, screenshots and logs are uploaded as an artifact on failure only | embedded PostgreSQL binaries (cached), the MinIO binary |
+| `e2e` | web-crypto + UI build, `npx playwright install --with-deps chromium`, web-crypto's `npm test` (incl. headless Chromium), then Playwright against the real server and the demo; traces, screenshots and logs are uploaded as an artifact on failure only | embedded PostgreSQL binaries (cached); the storage test builds and starts `cmd/ibs3` |
 | `openapi-docs` | regenerates the route table of `docs/api.md` and fails on `git diff --exit-code docs/api.md` | PostgreSQL service (`mgmt`'s `TestMain`) |
 | `packaging` | `shellcheck` and `bash -n`/`sh -n` of `scripts/`, `packaging/` and `web-crypto/scripts/`; `scripts/release.sh` (amd64 only); `scripts/release-apk.sh` (real abuild in a proot Alpine root, x86_64 only, including the APKBUILD's `check()`); `scripts/smoke-install.sh` with a real PostgreSQL (`SMOKE_PG_URL`) | PostgreSQL service |
 | `vendor` | `scripts/ci.sh vendor` | |

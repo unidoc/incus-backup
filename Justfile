@@ -64,6 +64,15 @@ fmt:
 test:
     go test ./... -count=1
 
+# The S3 test server (in-process fake), its fault injection, and its conformance suite incl. the mutation tests.
+test-s3:
+    go test ./internal/s3test/... -count=1
+
+# The same conformance suite and the datastore S3 tests against a REAL S3 server (versitygw, built and run
+# locally; see docs/testing-s3.md). Or point INCUS_BACKUP_TEST_S3_* at any other service yourself.
+test-s3-real:
+    bash scripts/test-s3-real.sh
+
 # Everything except the tests that start a real PostgreSQL.
 test-short:
     go test ./... -short -count=1
@@ -73,7 +82,7 @@ fuzz seconds="20":
     go test ./internal/format/ -run xxx -fuzz FuzzParseIndex -fuzztime {{seconds}}s
     go test ./internal/format/ -run xxx -fuzz FuzzDecodeChunk -fuzztime {{seconds}}s
 
-# They need MinIO and PostgreSQL exactly like the tests and FAIL without them. Other jobs on the
+# They use the in-process S3 fake and PostgreSQL like the tests (INCUS_BACKUP_TEST_S3_* measures a real service instead). Other jobs on the
 # machine distort wall-clock numbers: compare request counts (HEAD/op, GET/op, LIST/op, conns) first.
 # Benchmarks behind docs/performance.md at moderate sizes (about 30 minutes).
 bench:
@@ -122,7 +131,7 @@ check: fmt test
 
 # What CI runs (.github/workflows/ci.yml via scripts/ci.sh): gofmt, vet, linux/amd64+arm64 builds, tests,
 # the race subset, the web checks, the API doc table and go.mod/vendor; prints a summary at the end.
-# Needs MinIO (INCUS_BACKUP_TEST_MINIO) and PostgreSQL (embedded, or INCUS_BACKUP_TEST_DATABASE_URL).
+# Needs PostgreSQL (embedded, or INCUS_BACKUP_TEST_DATABASE_URL); S3 is the in-process fake.
 # Some steps only: `just ci fmt vet build`. docs/development.md lists what CI runs beyond this.
 ci *STEPS:
     bash scripts/ci.sh {{STEPS}}

@@ -127,3 +127,37 @@ func TestSSOOnlyUserGetsNoLocalKeys(t *testing.T) {
 		t.Fatalf("tokens: %v %v", l, err)
 	}
 }
+
+// A single sign-on user whose session is older than the re-authentication window is told they have no
+// password here, not asked for one they cannot give.
+func TestSSOOnlyOldSessionGetsTheSingleSignOnRefusal(t *testing.T) {
+	w, clock := reauthWeb(t, "sso")
+	if _, err := w.node.Svc.DB.Pool().Exec(context.Background(), `UPDATE users SET password_hash='' WHERE name='sso'`); err != nil {
+		t.Fatal(err)
+	}
+	clock.Add(int64(auth.ReauthWindow + time.Minute))
+	for _, c := range []struct {
+		path string
+		body any
+	}{
+		{"/api/v1/me/tokens", map[string]any{"name": "ci", "role": "readonly"}},
+		{"/api/v1/me/totp", nil},
+		{"/api/v1/me/totp/confirm", map[string]any{"code": "123456"}},
+		{"/api/v1/me/webauthn/register/begin", nil},
+	} {
+		code, b := w.req("POST", c.path, c.body, w.h())
+		if code != 400 || !strings.Contains(string(b), "single sign-on") || strings.Contains(string(b), "password_required") {
+			t.Fatalf("%s: %d %s", c.path, code, b)
+		}
+	}
+}
+
+// A positive ttl_hours that truncates to a zero Duration is refused, not turned into the default.
+func TestTokenTinyTTLIsRefused(t *testing.T) {
+	w, _ := reauthWeb(t, "anna")
+	for _, ttl := range []float64{1e-14, 1e-300} {
+		if code, b := w.req("POST", "/api/v1/me/tokens", map[string]any{"name": "tiny", "role": "readonly", "ttl_hours": ttl}, w.h()); code != 400 {
+			t.Fatalf("ttl_hours %g: %d %s", ttl, code, b)
+		}
+	}
+}

@@ -16,8 +16,8 @@ shared by many instances is captured once, and what to back up is declared with 
 
 ## Status
 
-All planned core backup functionality is implemented and sandbox-tested: real PostgreSQL, a real S3
-service (MinIO), real mutual TLS, a real browser (headless Chromium) and a faithful fake of Incus
+All planned core backup functionality is implemented and sandbox-tested: real PostgreSQL, an in-process
+S3 test server pinned to a real one by a conformance suite (versitygw), real mutual TLS, a real browser (headless Chromium) and a faithful fake of Incus
 (`go test ./...`, Playwright). **It has not yet been validated on a real Incus/ZFS host, a real S3
 provider, a real mail server or a public ACME CA.** The plan for that, with pass/fail criteria, is
 [`docs/real-host-validation.md`](docs/real-host-validation.md). Do not trust production data to it before
@@ -89,14 +89,14 @@ flowchart LR
 
 ## Compared with Proxmox Backup Server
 
-"Tested" means a test in this tree (sandbox: real PostgreSQL, MinIO, mutual TLS, a browser, fake Incus);
+"Tested" means a test in this tree (sandbox: real PostgreSQL, an in-process S3 test server checked against versitygw, mutual TLS, a browser, fake Incus);
 nothing is validated on a real Incus host yet. The PBS side comes from the PBS 4.2.8 source and docs
 (`docs/pbs-comparison.md`).
 
 | Area | PBS feature | incus-backup | Status |
 |---|---|---|---|
 | Datastore | directory datastore | filesystem repository | **have** |
-| | S3 datastore | native S3 repository with conditional writes and a presence set | **have** (MinIO; a real provider is unproven) |
+| | S3 datastore | native S3 repository with conditional writes and a presence set | **have** (S3 test server + conformance suite run against versitygw; a real provider is unproven) |
 | | local chunk cache for S3 restores | none | **missing** |
 | | removable datastore (USB rotation) | `repo detach` / `repo attach`, offline mode | **partial** (no mount/unmount workflow) |
 | | remove a datastore | `repo detach`, `repo destroy` | **have** |
@@ -261,12 +261,13 @@ just test         # go test ./... against a real PostgreSQL (embedded-postgres, 
 just web-test     # type check, unit tests and Playwright end-to-end tests of the console
 just fuzz         # format parsers
 just verify-vectors   # independent check of the format test vectors
-just bench        # the benchmarks behind docs/performance.md (needs MinIO)
+just bench        # the benchmarks behind docs/performance.md (PostgreSQL; S3 is the in-process fake)
 just ci           # what CI runs: fmt, vet, cross builds, tests, race subset, web checks, API doc, vendor
 ```
 
 Tests that need PostgreSQL or an S3 service **fail** rather than skip when none is available (S3 tests
-start a MinIO binary from `INCUS_BACKUP_TEST_MINIO` or `PATH`, or use `INCUS_BACKUP_TEST_S3_*`). Incus
+run against an in-process S3 server, no binary or network needed; `INCUS_BACKUP_TEST_S3_*` points the same
+tests at a real S3 service, see [`docs/testing-s3.md`](docs/testing-s3.md)). Incus
 itself cannot run in CI sandboxes: [`scripts/gates`](scripts/gates) validate the real Incus/ZFS behaviour
 on a host, using scratch objects only.
 

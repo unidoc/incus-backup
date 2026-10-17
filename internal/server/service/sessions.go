@@ -128,8 +128,11 @@ func (s *Service) acquireWriter(ctx context.Context, repoID, group, snap string,
 		if isUniqueViolation(err) {
 			var holder string
 			var since time.Time
-			_ = s.DB.Pool().QueryRow(ctx, `SELECT COALESCE(h.name,'sync'), se.created_at FROM sessions se LEFT JOIN hosts h ON h.id=se.host_id
+			_ = s.DB.Pool().QueryRow(ctx, `SELECT COALESCE(h.name,''), se.created_at FROM sessions se LEFT JOIN hosts h ON h.id=se.host_id
 				WHERE se.repository_id=$1 AND se.group_id=$2 AND se.state='open'`, repoID, group).Scan(&holder, &since)
+			if holder == "" {
+				holder = "the server (a delete or a sync pin)"
+			}
 			return "", fmt.Errorf("%w: another backup of this object is already running (started by %s at %s); one writer per object at a time",
 				ErrConflict, holder, since.Format(time.RFC3339))
 		}
@@ -355,6 +358,20 @@ var _ = pgx.ErrNoRows
 type syncPin struct {
 	ds      *datastore.Session
 	expires time.Time
+	peer    string // the calling host ("" for local transfers, which are not capped)
+	repoID  string
+}
+
+// MaxSyncPinsPerPeer bounds the open sync pins one sync-write host may hold per repository. A pin is
+// released when the transfer's SyncPutSnapshot returns (whatever its outcome) or after two hours of silence; without a bound a peer could open one per request.
+const MaxSyncPinsPerPeer = 8
+
+type syncPeerKey struct{}
+
+// WithSyncPeer names the remote host a sync call comes from, so that its open pins are counted against
+// MaxSyncPinsPerPeer. Local transfers (the sync manager) carry no peer and are not capped.
+func WithSyncPeer(ctx context.Context, hostID string) context.Context {
+	return context.WithValue(ctx, syncPeerKey{}, hostID)
 }
 
 type syncTransferKey struct{}
@@ -380,7 +397,22 @@ func (s *Service) syncPinFor(ctx context.Context, repo *Repo) (*datastore.Sessio
 	key := syncPinKey(ctx, repo.ID)
 	p := s.syncPins[key]
 	if p == nil {
-		p = &syncPin{ds: store.BeginPinSession()}
+		peer, _ := ctx.Value(syncPeerKey{}).(string)
+		if peer != "" {
+			open := 0
+			for _, o := range s.syncPins {
+				if o.peer == peer && o.repoID == repo.ID {
+					open++
+				}
+			}
+			// Refuse rather than release the oldest pin: that one may belong to a transfer still sending,
+			// and releasing it would unprotect its chunks. The peer retries once an older transfer commits
+			// or its pin runs out (two hours of silence).
+			if open >= MaxSyncPinsPerPeer {
+				return nil, fmt.Errorf("%w: this host already has %d open sync transfers into this repository; wait for one to finish (an abandoned transfer is released after two hours)", ErrTooManyRequests, open)
+			}
+		}
+		p = &syncPin{ds: store.BeginPinSession(), peer: peer, repoID: repo.ID}
 		s.syncPins[key] = p
 	}
 	// a sync moves one snapshot at a time and may be rate limited: keep the pin for two hours of silence
@@ -388,9 +420,9 @@ func (s *Service) syncPinFor(ctx context.Context, repo *Repo) (*datastore.Sessio
 	return p.ds, nil
 }
 
-// releaseSyncPin ends the sync pin of the transfer ctx belongs to (called when a synchronised snapshot has
-// committed: from then on its chunks are protected by the snapshot itself, and the pin set must not grow
-// for ever). Other transfers into the same repository keep their pins.
+// releaseSyncPin ends the sync pin of the transfer ctx belongs to (called when SyncPutSnapshot returns, on any
+// outcome: a committed snapshot protects its chunks itself, a refused one leaves orphans the run's next Missing
+// re-pins, and the pin set must not grow for ever). Other transfers into the same repository keep their pins.
 func (s *Service) releaseSyncPin(ctx context.Context, repoID string) {
 	key := syncPinKey(ctx, repoID)
 	s.mu.Lock()

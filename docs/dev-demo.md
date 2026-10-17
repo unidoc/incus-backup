@@ -16,7 +16,8 @@ Everything in it is the production code:
   so there is no HSTS and cookies are not Secure). The real auth store, sessions, CSRF, roles and audit
   log are all in place.
 - **Unix admin socket**: `mgmt.Server.LocalHandler`.
-- **MinIO** (optional): backs the second repository, `offsite`, on S3.
+- **Built-in S3 server** (default, `--s3=false` to turn it off): the in-process S3 test server
+  (`internal/s3test/s3fake`, data in `<dir>/s3`) backs the second repository, `offsite`, on S3.
 
 The data is produced only through real code paths:
 
@@ -34,36 +35,35 @@ The data is produced only through real code paths:
 ## Running it
 
 ```sh
-INCUS_BACKUP_TEST_MINIO=/tmp/minio-build/minio \
-  go run ./cmd/ibdemo --dir /tmp/ibdemo --reset --web 127.0.0.1:8099 --ui-dir web/dist
+go run ./cmd/ibdemo --dir /tmp/ibdemo --reset --web 127.0.0.1:8099 --ui-dir web/dist
 ```
 
 Or use the static build at `/tmp/ibwork/demo-bin/ibdemo`. When everything is ready, a banner appears
 on stdout with:
 
-- the URLs (web, agent API, admin socket, MinIO);
+- the URLs (web, agent API, admin socket, S3);
 - the four users;
 - the recovery key, the master key in hex and the escrow private key;
 - where each seeded situation is.
 
-Ctrl-C stops the listeners, MinIO and PostgreSQL. Measured: 1.3 s right after a seed, 0.2 s otherwise; no process survives. A demo killed with SIGKILL leaves PostgreSQL running; the next start, or `--reset`, stops it. It only signals a pid whose command line names `postgres` or `minio` and this directory.
+Ctrl-C stops the listeners, the S3 server and PostgreSQL. Measured: 1.3 s right after a seed, 0.2 s otherwise; no process survives. A demo killed with SIGKILL leaves PostgreSQL running; the next start, or `--reset`, stops it. It only signals a pid whose command line names `postgres` and this directory.
 
 | flag | default | meaning |
 |---|---|---|
-| `--dir` | `/tmp/ibdemo` | All state: `pg/`, `datastore/custody`, `minio/`, `hosts/` (client configs and trees of the simulated hosts), `server-state/` (CA), `demo.json` |
-| `--reset` | false | Wipe `--dir` first, stopping any PostgreSQL or MinIO a hard-killed demo left behind, then seed again |
+| `--dir` | `/tmp/ibdemo` | All state: `pg/`, `datastore/custody`, `s3/`, `hosts/` (client configs and trees of the simulated hosts), `server-state/` (CA), `demo.json` |
+| `--reset` | false | Wipe `--dir` first, stopping any PostgreSQL a hard-killed demo left behind, then seed again |
 | `--web` | `127.0.0.1:8099` | Plain-HTTP management API and UI (`127.0.0.1:0` = a free port, printed in the banner) |
 | `--ui-dir` | `web/dist`, `../web/dist` or `../../web/dist` if one exists | Serve a Vite build from disk, re-read on every request, so `npm run build` needs no restart. Without it, the UI embedded in the binary is served |
 | `--profile` | `full` | `full`: 30 days (measured 62–106 s on a loaded 4-core machine). `test`: 5 days (11–19 s) |
 | `--seed` | true | `--seed=false`: only the users and an empty repository `custody`. A later start without `--seed=false` seeds into it |
 | `--admin-password` | `demo-demo-demo-1` | Password of all four users (at least 12 characters) |
-| `--minio` | `$INCUS_BACKUP_TEST_MINIO` | MinIO binary for the S3 repository `offsite`. Without it, `offsite` is a filesystem repository |
+| `--s3` | true | Serve the S3 repository `offsite` from the built-in S3 server. `--s3=false`: `offsite` is a filesystem repository |
 | `--maintenance` | false | Run the real maintenance scheduler on the real clock after seeding. Retention may then thin the seeded history |
 | `--no-jobs` | false | Do not run the job executors of bosch and benfica |
 | `--agent`, `--socket`, `--log` | | Agent API listener, admin socket path, server log level |
 
 **Restarting without `--reset`** reuses the seeded directory and is ready in about 0.5 s. The ports of
-PostgreSQL, the agent API and MinIO are kept in `demo.json`, because the S3 endpoint and the sync
+PostgreSQL, the agent API and the S3 server are kept in `demo.json`, because the S3 endpoint and the sync
 peer's address are stored in PostgreSQL. If a seed never finished, the next start refuses and asks
 for `--reset`. A demo directory seeded by a build from before the schema consolidation
 (`CHANGELOG.md`) is refused by the schema guard; start it once with `--reset`.
@@ -114,7 +114,7 @@ The `full` profile simulates the 30 days that end at the moment seeding starts.
 
 **Repositories:**
 - `custody`: filesystem.
-- `offsite`: S3 in MinIO, bucket `offsite`, prefix `ib`. Its credentials are stored sealed.
+- `offsite`: S3 (the built-in test server), bucket `offsite`, prefix `ib`. Its credentials are stored sealed.
 - Maintenance schedules:
   - custody: capacity sampled every 4 h;
   - offsite: capacity sampled every 12 h, with verify, reconcile, prune and GC weekly.
@@ -197,7 +197,7 @@ Measured on one full seed:
 | custody | 425 | 166 (523 snapshots in total) | 569 MiB | 9.6 GiB | 16.9 |
 | offsite | 98 | | 266 MiB | | |
 
-On disk this took 590 MB for the datastore and 285 MB for MinIO.
+On disk this took 590 MB for the datastore and 285 MB for the S3 data (measured with MinIO, before the built-in server replaced it).
 
 The banner and `demo.json` (`facts`) name the exact group and snapshot ids.
 
@@ -278,9 +278,9 @@ Memory with executors running (the bosch and benfica worlds stay in memory):
    protected and failed db-01 snapshots, and the browsable `nextcloud-data` with the file named in
    `facts.fs_file`.
 4. Never run two demos on one `--dir`. Several demos with different `--dir` values and web ports can
-   run side by side; each gets its own PostgreSQL and MinIO ports.
+   run side by side; each gets its own PostgreSQL and S3 ports.
 
-The package test `internal/demo` (`go test ./internal/demo`, which needs `INCUS_BACKUP_TEST_MINIO`)
+The package test `internal/demo` (`go test ./internal/demo`)
 does this in-process, with random ports and the reduced seed. It:
 
 - logs in with the real cookie and CSRF flow;

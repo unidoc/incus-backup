@@ -11,8 +11,10 @@ server). Layout follows `incus-sync`: cobra CLI, `internal/`, Justfile, `version
 - PostgreSQL (pgx/v5) is the ONLY control-plane implementation. No SQLite/YAML/in-memory fallbacks
   for the control plane. The DATASTORE is pluggable (`internal/datastore.Backend`: filesystem or native S3): same
   object model everywhere, no POSIX assumptions in repository logic (`MemBackend` enforces that), commit =
-  `commit.json` written last. S3 tests need MinIO (`INCUS_BACKUP_TEST_MINIO` or `INCUS_BACKUP_TEST_S3_*`) and FAIL
-  without it. The datastore is the source of truth for payload and snapshot/chunk
+  `commit.json` written last. S3 tests run against the in-process fake `internal/s3test/s3fake` (hermetic, strict, fault injection; see
+  `docs/testing-s3.md`); `INCUS_BACKUP_TEST_S3_*` points the same tests at a real S3 service. Any new S3
+  behaviour the code relies on needs the fake AND a conformance check (`internal/s3test/conformance`), proven
+  against versitygw (`just test-s3-real`). No MinIO. The datastore is the source of truth for payload and snapshot/chunk
   relations; PostgreSQL can be rebuilt from it (`reconcile`).
 - DB tests use `internal/testdb`: `INCUS_BACKUP_TEST_DATABASE_URL`, else embedded-postgres. They FAIL, never
   skip, when no database is available. Every package using it needs `TestMain(m) { testdb.Main(m) }`.
@@ -50,6 +52,6 @@ server). Layout follows `incus-sync`: cobra CLI, `internal/`, Justfile, `version
 - Memory: backup, restore, verify, sync, GC stream with bounded memory (see docs/memory.md); never read a whole disk/tree into RAM.
 
 ## Commands
-`just build` · `just test` (≈30 s, real PostgreSQL) · `just fuzz` · `just verify-vectors` · `just fmt`
+`just build` · `just test` (≈30 s, real PostgreSQL) · `just test-s3` (S3 fake + conformance, no services) · `just test-s3-real` (versitygw) · `just fuzz` · `just verify-vectors` · `just fmt`
 Go toolchain note for sandboxes without 1.26: fetch the toolchain zip from proxy.golang.org with curl and use a
 private GOMODCACHE.

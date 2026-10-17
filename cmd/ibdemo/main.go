@@ -1,5 +1,5 @@
 // Command ibdemo starts a complete, real incus-backup server stack in one process (embedded
-// PostgreSQL, agent API, management API + web UI on plain HTTP, admin socket, optional MinIO) and
+// PostgreSQL, agent API, management API + web UI on plain HTTP, admin socket, optional built-in S3 server) and
 // seeds it with weeks of realistic history produced by the real client engine. It is a development
 // and end-to-end test tool for the web UI; it is never packaged. See docs/dev-demo.md.
 package main
@@ -8,6 +8,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"io"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -21,7 +22,7 @@ import (
 func main() {
 	var opt demo.Options
 	var profile, logLevel string
-	flag.StringVar(&opt.Dir, "dir", "/tmp/ibdemo", "demo directory (PostgreSQL data, datastores, MinIO data, host state)")
+	flag.StringVar(&opt.Dir, "dir", "/tmp/ibdemo", "demo directory (PostgreSQL data, datastores, S3 data, host state)")
 	flag.BoolVar(&opt.Reset, "reset", false, "wipe --dir first and seed again")
 	flag.StringVar(&opt.Web, "web", "127.0.0.1:8099", "plain-HTTP listener of the management API and web UI")
 	flag.StringVar(&opt.Agent, "agent", "", "agent API (mutual TLS) listener (default: the port of the previous run, else a free one)")
@@ -30,7 +31,7 @@ func main() {
 	flag.BoolVar(&opt.Seed, "seed", true, "seed realistic data into a new directory")
 	flag.StringVar(&profile, "profile", "full", "seed size: full (30 days, about 1 minute) or test (5 days, small, about 15 s)")
 	flag.StringVar(&opt.Password, "admin-password", demo.DefaultPassword, "password of every demo user (admin, operator, restorer, viewer)")
-	flag.StringVar(&opt.Minio, "minio", os.Getenv("INCUS_BACKUP_TEST_MINIO"), "MinIO server binary for the S3 repository \"offsite\" (default $INCUS_BACKUP_TEST_MINIO; empty: a filesystem repository)")
+	flag.BoolVar(&opt.S3, "s3", true, "serve the repository \"offsite\" from the built-in S3 server (in this process, no external service); false: a filesystem repository")
 	flag.BoolVar(&opt.Maintenance, "maintenance", false, "run the real maintenance scheduler after seeding (retention may thin the seeded history)")
 	flag.BoolVar(&opt.NoJobs, "no-jobs", false, "do not run the job executors of the simulated hosts bosch and benfica (no host jobs; less memory)")
 	flag.StringVar(&logLevel, "log", "warn", "server log level: debug, info, warn, error")
@@ -69,7 +70,8 @@ func main() {
 		fmt.Fprintf(os.Stderr, "ibdemo: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Print(st.Banner(time.Since(began)))
+	// the banner lists the demo's generated sign-in credentials on purpose: the operator reads them here
+	_, _ = io.WriteString(os.Stdout, st.Banner(time.Since(began)))
 	<-ctx.Done()
 	fmt.Fprintln(os.Stderr, "ibdemo: shutting down")
 	st.Close()

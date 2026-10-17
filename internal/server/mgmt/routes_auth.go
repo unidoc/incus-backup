@@ -59,9 +59,18 @@ type sessionView struct {
 	Enrol2FA bool `json:"enrol_2fa_required,omitempty"`
 }
 
+// sendCookie sets a cookie that is Secure unless the server was started for plain HTTP (the demo,
+// Server.Secure == false): the downgrade is the explicit exception, not the default.
+func (s *Server) sendCookie(w http.ResponseWriter, c *http.Cookie) {
+	c.Secure = true
+	if !s.Secure {
+		c.Secure = false
+	}
+	http.SetCookie(w, c)
+}
+
 func (s *Server) setCookie(w http.ResponseWriter, tok string, exp time.Time) {
-	http.SetCookie(w, &http.Cookie{Name: cookieName, Value: tok, Path: "/", HttpOnly: true, Secure: s.Secure,
-		SameSite: http.SameSiteStrictMode, Expires: exp})
+	s.sendCookie(w, &http.Cookie{Name: cookieName, Value: tok, Path: "/", HttpOnly: true, SameSite: http.SameSiteStrictMode, Expires: exp})
 }
 
 // selfName returns the signed-in user's name; the local admin and tokens have no "me".
@@ -263,6 +272,10 @@ func (s *Server) authRoutes(h routeFn) {
 			s.fail(w, r, err)
 			return
 		}
+		if err := s.Auth.RequireLocalPassword(r.Context(), p.User); err != nil { // before the password prompt: single sign-on has none to give
+			s.authFail(w, r, err)
+			return
+		}
 		if err := s.Auth.Reauthenticate(r.Context(), p.User, cookieValue(r), req.Password); err != nil { // a stolen cookie must not add a factor
 			s.authFail(w, r, err)
 			return
@@ -282,6 +295,10 @@ func (s *Server) authRoutes(h routeFn) {
 		var req struct{ Code, Password string }
 		if err := decode(r, &req); err != nil {
 			s.fail(w, r, err)
+			return
+		}
+		if err := s.Auth.RequireLocalPassword(r.Context(), p.User); err != nil { // before the password prompt: single sign-on has none to give
+			s.authFail(w, r, err)
 			return
 		}
 		if err := s.Auth.Reauthenticate(r.Context(), p.User, cookieValue(r), req.Password); err != nil {
@@ -364,8 +381,16 @@ func (s *Server) authRoutes(h routeFn) {
 			s.fail(w, r, err)
 			return
 		}
-		if req.TTLHours < 0 || req.TTLHours > auth.MaxTokenTTL.Hours() { // checked before the Duration conversion, which overflows
+		ttl := time.Duration(0)
+		if req.TTLHours >= 0 && req.TTLHours <= auth.MaxTokenTTL.Hours() { // checked before the Duration conversion, which overflows
+			ttl = time.Duration(req.TTLHours * float64(time.Hour))
+		}
+		if req.TTLHours < 0 || req.TTLHours > auth.MaxTokenTTL.Hours() || (req.TTLHours > 0 && ttl <= 0) { // a positive value that rounds to zero is not "the default"
 			s.fail(w, r, fmt.Errorf("%w: ttl_hours is 0 (default %d days) up to %d days", service.ErrBadRequest, int(auth.DefaultTokenTTL.Hours()/24), int(auth.MaxTokenTTL.Hours()/24)))
+			return
+		}
+		if err := s.Auth.RequireLocalPassword(r.Context(), p.User); err != nil { // before the password prompt: single sign-on has none to give
+			s.authFail(w, r, err)
 			return
 		}
 		if err := s.Auth.Reauthenticate(r.Context(), p.User, cookieValue(r), req.Password); err != nil { // a stolen cookie must not mint a long-lived key
@@ -375,7 +400,7 @@ func (s *Server) authRoutes(h routeFn) {
 		if req.Role == "" {
 			req.Role = p.MaxRole()
 		}
-		sec, info, err := s.Auth.CreateTokenFor(r.Context(), p.User, req.Name, req.Role, time.Duration(req.TTLHours*float64(time.Hour)), req.Repositories)
+		sec, info, err := s.Auth.CreateTokenFor(r.Context(), p.User, req.Name, req.Role, ttl, req.Repositories)
 		if err != nil {
 			s.authFail(w, r, err)
 			return

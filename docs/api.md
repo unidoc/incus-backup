@@ -81,7 +81,7 @@ A user's global role may then be `none`.
 | `GET/POST /oidc/providers`, `PUT/DELETE /oidc/providers/{name}`, `POST /oidc/providers/{name}/test` | admin | identity providers (client secret write-only) and a discovery test |
 | `GET/PUT /auth/settings` | admin | `require_2fa` (none, admin, all), `local_login`, `webauthn_rp_id`, `webauthn_origins`, and what is in effect |
 
-Sessions expire after 30 min idle / 12 h absolute. Idle means no request from a person: the open event stream's periodic session checks do not renew it, and the console pauses its event-driven refetches while the tab is hidden (`docs/authentication.md`, "What counts as activity"). Five failed logins lock an account for growing intervals
+Sessions expire after 30 min idle / 12 h absolute. Idle means no request from a person: the open event stream's periodic session checks do not renew it, and the console pauses all its timed polls and event-driven refetches while the tab is hidden (`docs/authentication.md`, "What counts as activity"). Five failed logins lock an account for growing intervals
 (1–15 min); login attempts are also rate limited per address.
 
 ## Dashboard and repositories

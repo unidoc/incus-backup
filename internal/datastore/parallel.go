@@ -15,7 +15,7 @@ import (
 // behind the defaults.
 const (
 	// DefaultRequestParallelism bounds the concurrent metadata requests (HEAD, small GET, DELETE,
-	// LIST of one prefix) of one operation. Measured on MinIO behind a delay line (11,000 ids):
+	// LIST of one prefix) of one operation. Measured on MinIO (historical) behind a delay line (11,000 ids):
 	// 32 -> 64 halves the time at 5-80 ms RTT and costs nothing at 0 ms; 64 requests per 20 ms
 	// is ~3,200/s, below the per-prefix request rates S3 services document.
 	DefaultRequestParallelism = 64

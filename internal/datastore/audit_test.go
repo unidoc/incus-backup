@@ -226,7 +226,7 @@ func TestAuditCleanOrphansVersusRecommitOfTheSameSnapshot(t *testing.T) {
 	}
 }
 
-// On real MinIO, through the maintenance-mode wrapper exactly as the daemon opens it: the HEAD-less
+// On the S3 test service, through the maintenance-mode wrapper exactly as the daemon opens it: the HEAD-less
 // conditional PUT answers "exists" for a stored chunk, the sharded listing sees exactly what one
 // listing sees, verify and GC work, and offline mode stops the sharded listing.
 func TestAuditS3FastPathsThroughTheModeWrapper(t *testing.T) {

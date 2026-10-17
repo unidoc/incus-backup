@@ -1,6 +1,6 @@
 // Package demo starts a complete, real incus-backup server stack in one process (embedded
 // PostgreSQL, the agent API over mutual TLS, the management API and web UI on plain HTTP, the unix
-// admin socket, optionally MinIO for an S3 repository) and seeds it with realistic history produced
+// admin socket, optionally the built-in S3 server for an S3 repository) and seeds it with realistic history produced
 // by the real client engine against a fake Incus. It is a development and end-to-end test tool
 // (cmd/ibdemo); nothing here is shipped.
 package demo
@@ -36,7 +36,7 @@ import (
 
 // Options configure a demo stack.
 type Options struct {
-	Dir   string // everything lives here (PostgreSQL data, datastores, MinIO data, host state)
+	Dir   string // everything lives here (PostgreSQL data, datastores, S3 data, host state)
 	Reset bool   // wipe Dir first
 	// Web is the plain-HTTP management listener ("127.0.0.1:0" picks a free port).
 	Web string
@@ -51,8 +51,9 @@ type Options struct {
 	Profile Profile
 	// Password of every demo user.
 	Password string
-	// Minio is the MinIO server binary; "" means the second repository is a filesystem one.
-	Minio string
+	// S3 serves the second repository ("offsite") from the built-in S3 server (internal/s3test/s3fake,
+	// started in this process, data under Dir/s3); false makes it a filesystem repository.
+	S3 bool
 	// Maintenance runs the real maintenance scheduler (retention, GC, verify, capacity, sync) on the
 	// real clock after seeding. Off by default: a due retention run would thin the seeded history.
 	Maintenance bool
@@ -76,7 +77,7 @@ type Stack struct {
 	AgentAddr  string
 	WebURL     string
 	SocketPath string
-	S3Endpoint string // "" without MinIO
+	S3Endpoint string // "" without the built-in S3 server
 	State      *State
 	// JobHosts are the simulated hosts whose job executors run (they take jobs from the API).
 	JobHosts []string
@@ -93,7 +94,7 @@ type Stack struct {
 type State struct {
 	PGPort       int        `json:"pg_port"`
 	AgentPort    int        `json:"agent_port"`
-	MinioPort    int        `json:"minio_port"`
+	S3Port       int        `json:"s3_port"`
 	Seeded       bool       `json:"seeded"`
 	SeededAt     *time.Time `json:"seeded_at,omitempty"`
 	SeedSeconds  float64    `json:"seed_seconds,omitempty"`
@@ -282,12 +283,12 @@ func Start(ctx context.Context, opt Options) (st *Stack, err error) {
 	s.serve(func() error { return agent.ServeTLS(aln, "", "") }, agent)
 
 	// the second repository's S3 service
-	if opt.Minio != "" {
-		if err := pick(&s.State.MinioPort); err != nil {
+	if opt.S3 {
+		if err := pick(&s.State.S3Port); err != nil {
 			return nil, err
 		}
-		s.progress("starting MinIO (port %d) for the S3 repository \"offsite\"", s.State.MinioPort)
-		ep, stop, err := startMinio(ctx, opt.Minio, filepath.Join(opt.Dir, "minio"), s.State.MinioPort, "offsite")
+		s.progress("starting the built-in S3 server (port %d) for the S3 repository \"offsite\"", s.State.S3Port)
+		ep, stop, err := startS3(filepath.Join(opt.Dir, "s3"), s.State.S3Port, "offsite")
 		if err != nil {
 			return nil, err
 		}
@@ -443,8 +444,7 @@ func (s *Stack) createUsers(ctx context.Context) error {
 	return nil
 }
 
-// stopLeftovers stops PostgreSQL/MinIO processes of a hard-killed demo before its directory is wiped.
+// stopLeftovers stops the PostgreSQL process of a hard-killed demo before its directory is wiped.
 func stopLeftovers(dir string) {
 	killStale(filepath.Join(dir, "pg", "data", "postmaster.pid"), "postgres", filepath.Join(dir, "pg", "data"))
-	killStale(filepath.Join(dir, "minio", "minio.pid"), "minio", filepath.Join(dir, "minio", "data"))
 }

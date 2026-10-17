@@ -3,6 +3,7 @@
 // exact command to run on the host -> a live wait that turns green when the host has enrolled ->
 // next steps (policy, first backup, recovery key). The token lives in this component only and is
 // never shown again. Pending (unused) tokens are listed below and can be revoked.
+import { usePoll } from '@/lib/poll'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import Icon from '@/components/icons/Icon.vue'
@@ -62,7 +63,7 @@ const issuedAt = ref(0)
 const prevFingerprint = ref('')
 const enrolled = ref<HostRow | null>(null)
 const expired = ref(false)
-let timer: ReturnType<typeof setInterval> | null = null
+let timer: (() => void) | null = null
 
 async function submit() {
   touched.value = true
@@ -92,10 +93,10 @@ async function submit() {
 // identity appears; a re-enrolled one gets a new certificate fingerprint.
 function startWatch() {
   stopWatch()
-  timer = setInterval(poll, 3000)
+  timer = usePoll(poll, 3000)
   void poll()
 }
-function stopWatch() { if (timer) { clearInterval(timer); timer = null } }
+function stopWatch() { if (timer) { timer(); timer = null } }
 async function poll() {
   const r = result.value
   if (!r || enrolled.value) { stopWatch(); return }

@@ -712,7 +712,7 @@ func (x *Executor) guestFiles(ctx context.Context, r *jobRun, p jobspec.GuestFil
 		res, err := x.Eng.RestoreGuestFiles(ctx, engine.GuestFilesOptions{Server: r.target, Project: p.Project, Name: p.Object, Snapshot: p.Snapshot,
 			Paths: p.Paths, Partition: p.Partition, Dest: dir, Image: x.RecoveryImage, Pool: x.RecoveryPool, Memory: x.RecoveryMemory, CPU: x.RecoveryCPU,
 			// the delivery is limited to this size anyway; never extract unbounded from a hostile guest filesystem
-			MaxBytes: jobspec.MaxDeliveryBytes})
+			MaxBytes: jobspec.MaxDeliveryBytes, MaxEntries: p.MaxEntries})
 		if err != nil {
 			return nil, err
 		}
@@ -744,8 +744,13 @@ func (x *Executor) fsExtract(ctx context.Context, r *jobRun, p jobspec.FSExtract
 	}
 	return x.withTemp(func(dir string) (any, error) {
 		r.logLine("info", fmt.Sprintf("extracting %d path(s) from %s/%s@%s", len(p.Paths), p.Project, p.Object, orLatest(p.Snapshot)))
-		if _, err := x.Eng.ExtractFSPaths(ctx, r.target, p.Project, p.Object, p.Snapshot, p.Paths, dir); err != nil {
+		_, skips, err := x.Eng.ExtractFSPaths(ctx, r.target, p.Project, p.Object, p.Snapshot, p.Paths, dir)
+		if err != nil {
 			return nil, err
+		}
+		// never silent: the job log says how many ownership/xattr operations the host refused and which
+		if msg := skips.Summary(); msg != "" {
+			r.logLine("warn", msg)
 		}
 		return x.deliver(ctx, r, dir, key)
 	})

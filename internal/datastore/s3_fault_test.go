@@ -5,8 +5,10 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"math/rand"
 	"net"
 	"net/http"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -15,6 +17,7 @@ import (
 
 	"github.com/unidoc/incus-backup/internal/format"
 	"github.com/unidoc/incus-backup/internal/s3test"
+	"github.com/unidoc/incus-backup/internal/s3test/s3fake"
 )
 
 // faultProxy sits between the backend and the real S3 service and breaks connections on demand.
@@ -198,13 +201,10 @@ func TestS3UnreachableEndpointFailsLoudly(t *testing.T) {
 	}
 }
 
-// A whole life of a repository on S3 - sessions that reuse chunks, commit, GC with pinned and unpinned
-// chunks, verify, quarantine, protect, delete - never issues an S3 COPY: nothing is rewritten to
-// keep it "alive", so no extra requests and no new object versions.
-func TestS3NeverIssuesACopyRequest(t *testing.T) {
-	svc, bucket := s3test.NewBucket(t)
-	p := newFaultProxy(t, svc.Endpoint)
-	s := s3Via(t, p, bucket, svc)
+// exerciseWholeLife is a whole life of a repository on S3 - sessions that reuse chunks, commit, GC with pinned and
+// unpinned chunks, verify, quarantine, protect, delete.
+func exerciseWholeLife(t *testing.T, s *Store) {
+	t.Helper()
 	k := testKeys(t)
 	snap1, snap2 := "20261007230000-0a0a0a0a", "20261007230001-0b0b0b0b"
 	idx, man, ids := buildSnapshot(t, s, k, g1, snap1, "alpha", "beta", "gamma")
@@ -233,13 +233,11 @@ func TestS3NeverIssuesACopyRequest(t *testing.T) {
 	if err := s.DeleteSnapshot(g1, snap2); err != nil {
 		t.Fatal(err)
 	}
-	if p.sawCopy.Load() {
-		t.Fatal("an S3 COPY request was issued")
-	}
-	if p.conns.Load() < 20 {
-		t.Fatalf("the proxy saw only %d connections: the watcher was not exercised", p.conns.Load())
-	}
-	// negative control: the watcher does notice a real COPY
+}
+
+// copyProbe issues a real S3 COPY through the store's own client (the negative control of the tests below).
+func copyProbe(t *testing.T, s *Store) {
+	t.Helper()
 	sb := s.Backend().(*S3Backend)
 	_, err := sb.c.CopyObject(context.Background(),
 		minio.CopyDestOptions{Bucket: sb.bucket, Object: sb.prefix + "copy-probe"},
@@ -247,7 +245,165 @@ func TestS3NeverIssuesACopyRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+}
+
+// A whole life of a repository on S3 never issues an S3 COPY: nothing is rewritten to
+// keep it "alive", so no extra requests and no new object versions. (Observed with a TCP proxy, so it
+// works against any S3 service the tests are pointed at.)
+func TestS3NeverIssuesACopyRequest(t *testing.T) {
+	svc, bucket := s3test.NewBucket(t)
+	p := newFaultProxy(t, svc.Endpoint)
+	s := s3Via(t, p, bucket, svc)
+	exerciseWholeLife(t, s)
+	if p.sawCopy.Load() {
+		t.Fatal("an S3 COPY request was issued")
+	}
+	if p.conns.Load() < 20 {
+		t.Fatalf("the proxy saw only %d connections: the watcher was not exercised", p.conns.Load())
+	}
+	// negative control: the watcher does notice a real COPY
+	copyProbe(t, s)
 	if !p.sawCopy.Load() {
 		t.Fatal("the COPY watcher is blind: the test above proves nothing")
+	}
+}
+
+// The same, observed from the server side: the in-process fake's request log names every operation.
+func TestS3NeverIssuesACopyRequestFakeLog(t *testing.T) {
+	srv, svc := s3test.NewServer(t)
+	svc, bucket := s3test.NewBucketAt(t, svc)
+	b, err := NewS3Backend(S3Config{Endpoint: svc.Endpoint, Bucket: bucket, Prefix: "repo", AccessKey: svc.AccessKey, SecretKey: svc.SecretKey, NoTLS: true, PathStyle: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InitBackend(b); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenBackend(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	srv.ResetLog()
+	exerciseWholeLife(t, s)
+	if n := srv.Count("CopyObject"); n != 0 {
+		t.Fatalf("%d S3 COPY requests were issued", n)
+	}
+	if n := srv.Count("PutObject"); n < 10 {
+		t.Fatalf("only %d PUTs were seen: the log was not exercised", n)
+	}
+	for _, r := range srv.Requests() {
+		if r.Header.Get("X-Amz-Copy-Source") != "" {
+			t.Fatalf("a request carries x-amz-copy-source: %+v", r)
+		}
+	}
+	for _, op := range []string{"UploadPart", "CreateMultipartUpload"} {
+		if srv.Count(op) != 0 {
+			t.Fatalf("the repository started using %s, which the S3 test server does not implement", op)
+		}
+	}
+	// negative control: the log does show a real COPY
+	copyProbe(t, s)
+	if srv.Count("CopyObject") != 1 {
+		t.Fatal("the request log is blind to COPY: the test above proves nothing")
+	}
+}
+
+func s3OnFake(t *testing.T) (*s3test.Server, string, *Store) {
+	t.Helper()
+	srv, svc := s3test.NewServer(t)
+	svc, bucket := s3test.NewBucketAt(t, svc)
+	b, err := NewS3Backend(S3Config{Endpoint: svc.Endpoint, Bucket: bucket, Prefix: "repo", AccessKey: svc.AccessKey, SecretKey: svc.SecretKey, NoTLS: true, PathStyle: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := InitBackend(b); err != nil {
+		t.Fatal(err)
+	}
+	s, err := OpenBackend(b)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return srv, bucket, s
+}
+
+// A burst of SlowDown answers (S3's "slow down" throttling) is ridden out by the client's retries and
+// a whole session still commits.
+func TestS3SlowDownBurstIsRiddenOut(t *testing.T) {
+	srv, _, s := s3OnFake(t)
+	k := testKeys(t)
+	snap := "20261007230000-0a0a0a0a"
+	idx, man, _ := buildSnapshot(t, s, k, g1, snap, "a", "b", "c", "d")
+	r := srv.SlowDownBurst(3)
+	r5 := srv.FailNext("PutObject", 2, 500, "InternalError")
+	if err := commit(t, s, g1, snap, idx, man); err != nil {
+		t.Fatalf("commit through a SlowDown burst: %v", err)
+	}
+	if r.Hits() != 3 || r5.Hits() != 2 {
+		t.Fatalf("faults hit %d + %d times, want 3 + 2", r.Hits(), r5.Hits())
+	}
+	if err := s.CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A connection torn in the middle of an upload leaves NO object, ever: not while the client retries and
+// not when every attempt fails; and the same chunk can be stored afterwards.
+func TestS3TornUploadStoresNothingOnTheServer(t *testing.T) {
+	old := minio.MaxRetry
+	minio.MaxRetry = 3 // fewer retries: this test exhausts them on purpose
+	defer func() { minio.MaxRetry = old }()
+	srv, bucket, s := s3OnFake(t)
+	k := testKeys(t)
+	big := make([]byte, 2<<20)
+	rand.New(rand.NewSource(7)).Read(big) // incompressible: the blob must be bigger than the tear point
+	id, blob, _ := k.EncodeChunk(big, format.EncodeOpts{})
+	key := "repo/" + chunkKey(id)
+	// every attempt is torn: the PUT fails and nothing is stored
+	rule := srv.AddRule(s3fake.Rule{Op: "PutObject", Key: "repo/chunks/", Action: s3fake.Action{DropAfterBytes: 100 << 10}})
+	if _, err := s.PutChunk(id, blob); err == nil {
+		t.Fatal("a chunk whose upload is torn on every attempt reported success")
+	}
+	if rule.Hits() < 2 {
+		t.Fatalf("the tear was injected %d times", rule.Hits())
+	}
+	if _, ok := srv.Object(bucket, key); ok {
+		t.Fatal("a torn upload left an object behind")
+	}
+	if s.HasChunk(id) {
+		t.Fatal("the store believes a torn chunk is present")
+	}
+	// one torn attempt, then the retry succeeds: the object is whole
+	rule.Remove()
+	srv.TearNextUpload(100 << 10)
+	created, err := s.PutChunk(id, blob)
+	if err != nil || !created {
+		t.Fatalf("PutChunk after one torn attempt: %v %v", created, err)
+	}
+	if got, ok := srv.Object(bucket, key); !ok || len(got) != len(blob) {
+		t.Fatalf("stored object has %d bytes, want %d", len(got), len(blob))
+	}
+	if err := s.CheckInvariants(); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The answer to the commit marker's conditional PUT is lost (the write took effect, the client retries
+// and sees 412): the commit must still end up committed, once, and consistent.
+func TestS3LostResponseOfTheCommitMarker(t *testing.T) {
+	srv, _, s := s3OnFake(t)
+	k := testKeys(t)
+	snap := "20261007230000-0a0a0a0a"
+	idx, man, _ := buildSnapshot(t, s, k, g1, snap, "a", "b")
+	rule := srv.AddRule(s3fake.Rule{Op: "PutObject", Func: func(r *s3fake.Request) bool { return strings.HasSuffix(r.Key, "/commit.json") },
+		Times: 1, Action: s3fake.Action{DropResponse: true}})
+	err := commit(t, s, g1, snap, idx, man)
+	if rule.Hits() != 1 {
+		t.Fatalf("the fault hit %d times: the commit marker is not named commit.json any more?", rule.Hits())
+	}
+	if err != nil {
+		t.Fatalf("commit after a lost commit-marker response: %v", err)
+	}
+	if err := s.CheckInvariants(); err != nil {
+		t.Fatal(err)
 	}
 }

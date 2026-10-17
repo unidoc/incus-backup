@@ -3,11 +3,13 @@ package httpapi_test
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -283,5 +285,53 @@ func TestOneWriterPerObjectAndHeartbeatOverTheWire(t *testing.T) {
 	f.svc.Lease = 0
 	if _, err := c.Begin(ctx, req); err != nil {
 		t.Fatalf("after reclaiming: %v", err)
+	}
+}
+
+// The sync transfer id is chosen by the peer: only 1..32 lower-case hex digits are accepted, and one host
+// can hold only a few transfers (429), so a peer cannot grow the server's pin set with every request.
+func TestSyncTransferIDIsValidatedAndCapped(t *testing.T) {
+	f := setup(t)
+	k := keys()
+	c := f.enrol("sync-peer", api.ScopeSyncWrite, k.DomainID)
+	post := func(id string) int {
+		req, err := http.NewRequest("POST", c.Base+"/v1/sync/chunks/missing", strings.NewReader(`{"ids":[]}`))
+		if err != nil {
+			t.Fatal(err)
+		}
+		req.Header.Set("Content-Type", "application/json")
+		if id != "" {
+			req.Header.Set(api.HeaderSyncTransfer, id)
+		}
+		resp, err := c.HTTP.Do(req)
+		if err != nil {
+			t.Fatal(err)
+		}
+		resp.Body.Close()
+		return resp.StatusCode
+	}
+	for _, bad := range []string{"XYZ", "AB", "run/1", strings.Repeat("a", 33), "a b", "../x"} {
+		if got := post(bad); got != 400 {
+			t.Errorf("transfer id %q: status %d, want 400", bad, got)
+		}
+	}
+	if got := post(""); got != 200 {
+		t.Errorf("an absent id (legacy peer) must still work, got %d", got)
+	}
+	for i := 0; i < service.MaxSyncPinsPerPeer-1; i++ { // one slot is the absent-id transfer
+		if got := post(fmt.Sprintf("%x", i+1)); got != 200 {
+			t.Fatalf("transfer %d: status %d", i, got)
+		}
+	}
+	if got := post("beef"); got != 429 {
+		t.Fatalf("a transfer beyond the cap: status %d, want 429", got)
+	}
+	if got := post("1"); got != 200 {
+		t.Fatalf("an open transfer must keep working: status %d", got)
+	}
+	// the real client (random 24-hex id) is accepted by a fresh peer
+	c2 := f.enrol("sync-peer2", api.ScopeSyncWrite, k.DomainID)
+	if _, err := c2.SyncMissing(context.Background(), nil); err != nil {
+		t.Fatalf("the remote client's own transfer id was rejected: %v", err)
 	}
 }

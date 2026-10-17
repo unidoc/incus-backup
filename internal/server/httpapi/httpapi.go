@@ -107,7 +107,11 @@ func (s *Server) fail(w http.ResponseWriter, r *http.Request, err error) {
 		code, msg = http.StatusNotFound, err.Error()
 	case errors.Is(err, service.ErrConflict):
 		code, msg = http.StatusConflict, err.Error()
+	case errors.Is(err, service.ErrTooManyRequests):
+		code, msg = http.StatusTooManyRequests, err.Error()
 	case errors.Is(err, service.ErrBadRequest), errors.Is(err, datastore.ErrInvalid):
+		// ErrInvalid (a rejected blob, e.g. in PutChunk) is deterministic: the client retries only 5xx, and
+		// resending the same bytes would be refused again, so 400 and no retry is intended.
 		code, msg = http.StatusBadRequest, err.Error()
 	case errors.Is(err, datastore.ErrReadOnly), errors.Is(err, datastore.ErrOffline):
 		code, msg = http.StatusServiceUnavailable, err.Error()

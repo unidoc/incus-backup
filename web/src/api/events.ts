@@ -9,6 +9,7 @@
 // After every reconnect the bus emits 'resync': views refetch, because events sent while we were
 // away are lost (the server does not replay).
 import { reactive } from 'vue'
+import { visibleTimeout } from '@/lib/poll'
 import { API_BASE } from './client'
 
 export const EVENT_TYPES = ['job', 'alert', 'run', 'repository', 'host', 'task'] as const
@@ -17,6 +18,12 @@ export interface LiveEvent<T = unknown> { type: LiveEventType; data: T }
 
 type Handler = (data: unknown, ev: LiveEvent) => void
 type BusKey = LiveEventType | 'resync' | '*'
+
+/** Most events one onVisible() subscription keeps while the tab is hidden. */
+const HIDDEN_QUEUE_MAX = 50
+function safeKey(ev: LiveEvent): string | null {
+  try { return JSON.stringify([ev.type, ev.data]) } catch { return null }
+}
 
 /** A tiny typed event bus. on() returns the unsubscribe function. */
 export class EventBus {
@@ -28,27 +35,35 @@ export class EventBus {
     return () => set!.delete(fn)
   }
   /**
-   * on(), but handlers run only while the tab is visible. Events that arrive in a hidden tab are
-   * remembered (one per subscription) and the handler runs once when the tab becomes visible again.
+   * on(), but handlers run only while the tab is visible. Events that arrive in a hidden tab are queued
+   * (per subscription, at most HIDDEN_QUEUE_MAX, oldest dropped, an event identical to one already queued
+   * is not queued twice) and replayed in order when the tab becomes visible again, so handlers that filter
+   * by id still see their own event even if another one arrived after it.
    * Refetching on an event is a request like any other, and the server counts it as activity: a hidden
    * tab must not keep its session alive (docs/authentication.md, "What counts as activity").
    */
   onVisible(type: BusKey, fn: Handler): () => void {
-    let pending: [unknown, LiveEvent] | null = null
+    let pending: [unknown, LiveEvent][] = []
     const run = (d: unknown, ev: LiveEvent) => {
-      if (typeof document === 'undefined' || document.visibilityState === 'visible') fn(d, ev)
-      else pending = [d, ev]
+      if (typeof document === 'undefined' || document.visibilityState === 'visible') { fn(d, ev); return }
+      const key = safeKey(ev)
+      if (key !== null && pending.some(([, q]) => safeKey(q) === key)) return
+      pending.push([d, ev])
+      if (pending.length > HIDDEN_QUEUE_MAX) pending.shift()
     }
     const onVis = () => {
-      if (document.visibilityState !== 'visible' || !pending) return
-      const [d, ev] = pending
-      pending = null
-      try { fn(d, ev) } catch (e) { console.error('event handler failed', e) }
+      if (document.visibilityState !== 'visible' || !pending.length) return
+      const batch = pending
+      pending = []
+      for (const [d, ev] of batch) {
+        try { fn(d, ev) } catch (e) { console.error('event handler failed', e) }
+      }
     }
     if (typeof document !== 'undefined') document.addEventListener('visibilitychange', onVis)
     const off = this.on(type, run)
     return () => {
       off()
+      pending = []
       if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVis)
     }
   }
@@ -93,7 +108,7 @@ let signedOutHandler: () => void = () => {}
 export function onSignedOut(fn: () => void) { signedOutHandler = fn }
 
 let es: EventSource | null = null
-let timer: ReturnType<typeof setTimeout> | null = null
+let timer: (() => void) | null = null // cancel() of the pending reconnect
 let everOpened = false
 let stopped = true
 let opts: LiveOptions = {}
@@ -107,7 +122,7 @@ export function startLive(o: LiveOptions = {}) {
 
 export function stopLive() {
   stopped = true
-  if (timer) clearTimeout(timer)
+  timer?.()
   timer = null
   es?.close()
   es = null
@@ -157,7 +172,9 @@ function connect() {
     live.state = live.failures >= 3 ? 'offline' : 'reconnecting'
     const delay = backoff(live.failures)
     live.retryIn = delay
-    timer = setTimeout(async () => {
+    // not while hidden: opening GET /events authenticates the cookie as activity and would renew the
+    // session. The reconnect waits for the tab to become visible; its 'resync' then refetches the views.
+    timer = visibleTimeout(async () => {
       timer = null
       if (live.failures >= 3 && opts.checkSession) {
         const ok = await opts.checkSession().catch(() => true) // network error: keep trying
@@ -171,7 +188,7 @@ function connect() {
 /** Reconnect immediately (the user clicked the connection indicator). */
 export function reconnectNow() {
   if (stopped) return
-  if (timer) clearTimeout(timer)
+  timer?.()
   timer = null
   es?.close()
   es = null

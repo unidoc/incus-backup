@@ -10,7 +10,8 @@ capacity sample, taken hourly by default), so it is cheap on S3 too.
 1. **Web listener, with an API token** (always available): `GET https://SERVER:8443/api/v1/metrics` with
    `Authorization: Bearer <token>`. Any role may scrape; create a `readonly` token for Prometheus
    (`Profile → API tokens`, or `POST /api/v1/me/tokens {"name":"prometheus","role":"readonly"}`).
-   Without a token: 401.
+   An API token created this way lives at most 365 days (90 days unless `ttl_hours` is given), so a scrape
+   token must be re-created before it expires and the `credentials_file` replaced. Without a token: 401.
 2. **A dedicated plain-HTTP listener** (optional, `server.yaml`):
 
    ```yaml

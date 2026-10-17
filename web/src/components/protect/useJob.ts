@@ -1,6 +1,7 @@
 // Live view of one host job: GET /jobs/{id} (with its log), refreshed on every SSE `job` event for it
 // and polled as a fallback while the job is not finished (every 2 s when the live stream is down,
 // every 10 s otherwise, so a lost event never leaves a stale page).
+import { visibleTimeout } from '@/lib/poll'
 import { onBeforeUnmount, shallowRef, watch, type Ref } from 'vue'
 import { bus, live } from '@/api/events'
 import { isAbort } from '@/api/client'
@@ -11,7 +12,7 @@ export function useJob(id: Ref<string | null | undefined>) {
   const error = shallowRef<Error | null>(null)
   const loading = shallowRef(false)
   let ctl: AbortController | null = null
-  let timer: ReturnType<typeof setTimeout> | null = null
+  let cancelTimer: (() => void) | null = null
   let debounce: ReturnType<typeof setTimeout> | null = null
   let alive = true
 
@@ -33,10 +34,10 @@ export function useJob(id: Ref<string | null | undefined>) {
   }
 
   function schedule() {
-    if (timer) clearTimeout(timer)
-    timer = null
+    if (cancelTimer) cancelTimer()
+    cancelTimer = null
     if (!alive || !id.value || (job.value && terminal(job.value.state))) return
-    timer = setTimeout(load, live.state === 'live' ? 10_000 : 2_000)
+    cancelTimer = visibleTimeout(load, live.state === 'live' ? 10_000 : 2_000)
   }
 
   const off = bus.onVisible('job', (d) => {
@@ -54,7 +55,7 @@ export function useJob(id: Ref<string | null | undefined>) {
     alive = false
     off(); offResync()
     ctl?.abort()
-    if (timer) clearTimeout(timer)
+    if (cancelTimer) cancelTimer()
     if (debounce) clearTimeout(debounce)
   })
 

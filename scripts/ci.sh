@@ -19,9 +19,9 @@
 #
 # Services: tests FAIL (never skip) without them.
 #   PostgreSQL  INCUS_BACKUP_TEST_DATABASE_URL, else embedded-postgres (downloads PostgreSQL once)
-#   S3          INCUS_BACKUP_TEST_S3_ENDPOINT/_ACCESS_KEY/_SECRET_KEY, else a MinIO server binary
-#               from INCUS_BACKUP_TEST_MINIO (or `minio` in PATH). internal/demo always needs
-#               INCUS_BACKUP_TEST_MINIO (its second repository is an S3 one).
+#   S3          nothing to install: internal/s3test serves an in-process fake (the demo uses the same
+#               one). INCUS_BACKUP_TEST_S3_ENDPOINT/_ACCESS_KEY/_SECRET_KEY point the same tests at a
+#               real S3 service instead (docs/testing-s3.md).
 set -uo pipefail
 ROOT=$(cd "$(dirname "$0")/.." && pwd)
 cd "$ROOT"
@@ -39,6 +39,7 @@ RACE_PKGS_A=(
 )
 RACE_PKGS_B=(
 	./internal/datastore/...
+	./internal/s3test/...
 	./internal/server/syncer/...
 	./internal/server/traffic/...
 	./internal/server/notify/...
@@ -57,13 +58,6 @@ RACE_PKGS=("${RACE_PKGS_A[@]}" "${RACE_PKGS_B[@]}" "${RACE_PKGS_C[@]}")
 ALL_STEPS=(fmt vet build test race web apidoc vendor)
 
 hr() { printf '\n=== %s\n' "$*"; }
-
-need_s3() {
-	if [ -z "${INCUS_BACKUP_TEST_S3_ENDPOINT:-}" ] && [ -z "${INCUS_BACKUP_TEST_MINIO:-}" ] && ! command -v minio >/dev/null; then
-		echo "no S3 service for the tests: set INCUS_BACKUP_TEST_MINIO=/path/to/minio (or INCUS_BACKUP_TEST_S3_*)" >&2
-		return 1
-	fi
-}
 
 step_fmt() {
 	local out
@@ -89,12 +83,10 @@ step_build() {
 }
 
 step_test() {
-	need_s3 || return 1
 	CGO_ENABLED=0 go test -count=1 -timeout 30m ./...
 }
 
 step_race() {
-	need_s3 || return 1
 	local pkgs=("${RACE_PKGS[@]}")
 	case "${RACE_SHARD:-}" in
 	"") ;;

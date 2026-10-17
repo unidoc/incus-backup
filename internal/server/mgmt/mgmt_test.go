@@ -132,7 +132,7 @@ func masterKeys() *format.Keys {
 	return k
 }
 
-// Everything a management UI needs, end to end over the real socket against real PostgreSQL and MinIO.
+// Everything a management UI needs, end to end over the real socket against real PostgreSQL and the S3 test service.
 func TestAdminAPIDrivesTheWholeControlPlane(t *testing.T) {
 	n := testsupport.NewNode(t)
 	c, sock := newClient(t, n)

@@ -295,7 +295,7 @@ export interface TokenInfo {
   name: string;
   role: Role;
   created_at: RFC3339;
-  /** Missing: never expires (only tokens created before every token got a lifetime). */
+  /** Every token is bounded at creation (default 90 days, at most 365); missing is not expected. */
   expires_at?: RFC3339;
   last_used_at?: RFC3339;
 }

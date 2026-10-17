@@ -36,7 +36,7 @@ describe('live events', () => {
     expect(got).toEqual([{ id: 1 }, '*job', '*job'])
   })
 
-  it('onVisible holds events while the tab is hidden and delivers one when it is visible again', () => {
+  it('onVisible holds events while the tab is hidden and replays them in order when it is visible again', () => {
     let state: DocumentVisibilityState = 'hidden'
     vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => state)
     const b = new EventBus()
@@ -47,17 +47,49 @@ describe('live events', () => {
     expect(got).toEqual([]) // hidden: no refetch, so no activity for the server
     state = 'visible'
     document.dispatchEvent(new Event('visibilitychange'))
-    expect(got).toEqual([2]) // one catch-up with the latest
+    expect(got).toEqual([1, 2]) // replayed in order (was: only the latest, which broke id-filtering handlers)
     document.dispatchEvent(new Event('visibilitychange'))
-    expect(got).toEqual([2])
+    expect(got).toEqual([1, 2])
     b.emit({ type: 'job', data: 3 })
-    expect(got).toEqual([2, 3]) // visible: immediate
+    expect(got).toEqual([1, 2, 3]) // visible: immediate
     off()
     state = 'hidden'
     b.emit({ type: 'job', data: 4 })
     state = 'visible'
     document.dispatchEvent(new Event('visibilitychange'))
-    expect(got).toEqual([2, 3]) // unsubscribed
+    expect(got).toEqual([1, 2, 3]) // unsubscribed
+    vi.restoreAllMocks()
+  })
+
+  it('onVisible replays every hidden event so an id-filtering handler still sees its own', () => {
+    let state: DocumentVisibilityState = 'hidden'
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => state)
+    const b = new EventBus()
+    const mine: unknown[] = []
+    const off = b.onVisible('job', (d) => { if ((d as { job_id: string }).job_id === 'mine') mine.push(d) })
+    b.emit({ type: 'job', data: { job_id: 'mine', state: 'done' } })
+    b.emit({ type: 'job', data: { job_id: 'other', state: 'running' } }) // arrives last
+    state = 'visible'
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(mine).toEqual([{ job_id: 'mine', state: 'done' }])
+    off()
+    vi.restoreAllMocks()
+  })
+
+  it('onVisible keeps a bounded queue and skips identical duplicates', () => {
+    let state: DocumentVisibilityState = 'hidden'
+    vi.spyOn(document, 'visibilityState', 'get').mockImplementation(() => state)
+    const b = new EventBus()
+    const got: number[] = []
+    const off = b.onVisible('job', (d) => got.push(d as number))
+    for (let i = 0; i < 80; i++) b.emit({ type: 'job', data: i })
+    b.emit({ type: 'job', data: 79 })
+    state = 'visible'
+    document.dispatchEvent(new Event('visibilitychange'))
+    expect(got).toHaveLength(50)
+    expect(got[0]).toBe(30)
+    expect(got[49]).toBe(79)
+    off()
     vi.restoreAllMocks()
   })
 

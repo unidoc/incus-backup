@@ -7,6 +7,7 @@
 // ends. Previews (retention plan, GC dry run) answer directly. Tasks already running on this repository
 // (started elsewhere or by the schedule) are picked up when the tab opens. The history below is the
 // maintenance-run table (GET /runs), every run linked to its task on the Tasks page.
+import { usePoll } from '@/lib/poll'
 import { computed, reactive, ref, onBeforeUnmount, watch } from 'vue'
 import { RouterLink } from 'vue-router'
 import Icon from '@/components/icons/Icon.vue'
@@ -53,13 +54,13 @@ interface Task { busy: boolean; started: number; error: string }
 const task = reactive<Record<Kind, Task>>({ verify: t0(), prune: t0(), gc: t0(), reconcile: t0() })
 function t0(): Task { return { busy: false, started: 0, error: '' } }
 const pending = computed(() => Object.values(task).some((t) => t.busy))
-let poll: ReturnType<typeof setInterval> | null = null
+let poll: (() => void) | null = null
 let tick: ReturnType<typeof setInterval> | null = null
 watch(() => pending.value || anyRunning.value, (on) => {
-  if (on && !poll) { poll = setInterval(() => void runs.refresh(), 3000); tick = setInterval(() => { now.value = Date.now() }, 1000) }
-  if (!on && poll) { clearInterval(poll); poll = null; if (tick) clearInterval(tick); tick = null; now.value = Date.now() }
+  if (on && !poll) { poll = usePoll(() => void runs.refresh(), 3000); tick = setInterval(() => { now.value = Date.now() }, 1000) }
+  if (!on && poll) { poll(); poll = null; if (tick) clearInterval(tick); tick = null; now.value = Date.now() }
 }, { immediate: true })
-onBeforeUnmount(() => { if (poll) clearInterval(poll); if (tick) clearInterval(tick) })
+onBeforeUnmount(() => { if (poll) poll(); if (tick) clearInterval(tick) })
 
 async function track<T>(k: Kind, fn: () => Promise<T>): Promise<T | undefined> {
   task[k] = { busy: true, started: Date.now(), error: '' }

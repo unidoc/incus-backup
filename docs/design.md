@@ -3,8 +3,8 @@
 Status: DRAFT 4 (2026-10-09). This document is the contract the code is written against; when
 implementation evidence changes an assumption, the document changes first.
 
-The system described here is implemented. Its tests pass against real PostgreSQL, a real S3 service
-(MinIO), real mutual TLS, a real browser (headless Chromium for the web UI and the WebAssembly
+The system described here is implemented. Its tests pass against real PostgreSQL, an S3 test server
+(in-process, pinned to a real S3 server by a conformance suite), real mutual TLS, a real browser (headless Chromium for the web UI and the WebAssembly
 decryption) and a faithful fake of Incus (dirty bitmaps, frozen NBD views, snapshots, a disposable
 recovery VM). What has not been proven against a real Incus/ZFS host, a real S3 provider, a real
 mail server or a real ACME CA is marked **unproven** where it is described, listed in section 14 and
@@ -995,7 +995,7 @@ and API tokens have no dedicated CLI commands (API or UI only).
 2. Fuzz the chunker, index/manifest parsers and blob decoder (`just fuzz`).
 3. Crash-injection tests at every step of section 4.3 and section 8 (datastore commit points, with a
    negative control).
-4. Tests fail, never skip, when PostgreSQL or MinIO is missing.
+4. Tests fail, never skip, when PostgreSQL is missing or a configured S3 service (INCUS_BACKUP_TEST_S3_*) is unusable. The default S3 service is in-process and cannot be missing (docs/testing-s3.md).
 5. Automated restore-and-compare: the engine tests restore and compare byte by byte against the fake; the
    gates (`scripts/gates/`) do it on a real host.
 6. Independent review of the cryptographic construction before 1.0 (now including escrow and IBS2). [O]
@@ -1024,7 +1024,7 @@ cannot run Incus.
 | G4d concurrency | One writer per object, leases, base pinned | **passed** |
 | G4a multi-target | One capture to two servers; lagging target keeps generations | **passed** (two real servers in-process) |
 | G4b sync | Push and pull, resume, partial never visible, independent retention, options | **passed** (every filesystem/S3 pairing) |
-| G4e S3 | Real S3-compatible service: conditional commit, presence set, GC, verify, restore, sync | **passed against MinIO**; a real provider **pending** |
+| G4e S3 | Real S3-compatible service: conditional commit, presence set, GC, verify, restore, sync | **passed against MinIO** (the original run) and, after MinIO stopped being distributed, against versitygw (conformance suite + datastore tests); a real provider **pending** |
 | G5 integration | `doctor`, OpenRC/apk packaging, incus-sync block, setup flow | apks **built** with abuild and smoke-installed (134 checks, `docs/packaging.md`); a real Alpine boot and the client daemon on a real host **pending** |
 | G6 management plane and UI | Roles, scopes, audit, every route, browser decryption | **passed** in the sandbox (route/role matrix, scope matrix, Playwright against the demo and a real server, WebAssembly in headless Chromium) |
 | G7 host jobs and restore tests | Jobs claimed, fenced, leased, sealed deliveries verified; restore-test methods | **passed** against the fake and real mTLS; full restore test on real ZFS and `guest_files` via a real recovery VM **pending** |

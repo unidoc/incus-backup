@@ -1,7 +1,7 @@
 # Host jobs and restore tests
 
 Status: implemented (2026-10-08). Tested against real PostgreSQL, a real mutual-TLS server
-(`testsupport.Node`), the filesystem and S3 (MinIO) datastores, and the fake Incus. Not yet run
+(`testsupport.Node`), the filesystem and S3 (in-process S3 test server) datastores, and the fake Incus. Not yet run
 against a real Incus host (see "Unproven" at the end).
 
 ## Why
@@ -72,7 +72,7 @@ the result or the restore-test details.
 | `deep_verify` | `last` (1..1000, default 1), `project`?, `object`? | `jobs.verify` | yes | 2 | 24 h | allowed |
 | `restore_instance` | `project`, `instance`, `snapshot`?, `as_project`?, `as_name`?, `volumes`, `start`, `keep_network` | `jobs.restore` | yes | 1 | 24 h | **off** |
 | `restore_volume` | `project`, `object`, `snapshot`?, `pool`, `as_project`?, `as_name` | `jobs.restore` | yes | 1 | 24 h | **off** |
-| `guest_files` | `project`, `object` (VM disk), `snapshot`?, `paths[]` (≤256), `partition`, `recipient_public_key` | `jobs.files` | yes | 2 | 2 h | **off** |
+| `guest_files` | `project`, `object` (VM disk), `snapshot`?, `paths[]` (≤256), `partition`, `max_entries`? (default 1,000,000, at most 10,000,000), `recipient_public_key` | `jobs.files` | yes | 2 | 2 h | **off** |
 | `fs_extract` | `project`, `object` (filesystem), `snapshot`?, `paths[]` (≤256), `recipient_public_key` | `jobs.files` | no | 2 | 2 h | **off** |
 
 `internal/jobspec` is the one definition: types, `Validate` (strict decode, canonical JSON
@@ -163,6 +163,18 @@ retried.
 - At most 200 lines per call.
 
 ## Sealed deliveries
+
+Limits of the file-recovery jobs: a delivery is at most 4 GiB (`jobspec.MaxDeliveryBytes`; `incus-backup restore
+guest-files --max-bytes` defaults to the same 4 GiB), and a `guest_files` recovery is at most `max_entries`
+files and directories (default 1,000,000; raise it with the job parameter or `--max-entries` up to the hard
+ceiling of 10,000,000, e.g. for a large maildir).
+
+`fs_extract` runs as root and restores the catalog's ownership, so the delivered tar is faithful. What the host
+kernel refuses (a uid it cannot chown to, an xattr it rejects with EPERM/EINVAL/ENOTSUP) is skipped, not fatal:
+the job log carries a `warn` line with the number of skipped operations and the first few names, and a file whose
+chown was skipped loses its set-id bits. `security.*` and `trusted.*` attributes of the guest (SELinux labels,
+file capabilities) are never applied on the host; `user.*` and POSIX ACLs are. The CLI (`fs extract`,
+`restore instance`) is stricter by design: as recorded, any refusal is an error.
 
 `guest_files` and `fs_extract` produce files for someone who holds a private X25519 key (the
 browser, typically) AND the repository key. The format is IBS2 (`docs/sealed-delivery.md`): the

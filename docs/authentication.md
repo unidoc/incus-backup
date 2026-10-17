@@ -16,7 +16,7 @@ below. See "API tokens" below for how they are created and how long they live.
 `user_sessions`, the same `ib_session` cookie (HttpOnly, Secure, SameSite=Strict) and the same CSRF token
 as a password sign-in, with the same lifetime (30 minutes idle, 12 hours at most). Roles, repository scopes
 (`docs/permissions.md`), the audit log and the lock-out after failed attempts are the same for every
-method. The lock-out looks the same for every name: an unknown name or a single sign-on account answers 401 five times and then 429 like a real account (counted in memory, so a restart forgets it). `GET /session` says how a session was opened (`method`: `password`, `passkey` or `oidc`).
+method. The lock-out looks the same for every name: an unknown name or a single sign-on account answers 401 five times and then 429 like a real account (counted in memory, so a restart forgets it). The in-memory part is bounded: names are hashed, names over 256 bytes are refused as an ordinary 401, an entry expires 24 hours after its last failure, and when 10000 entries are live the one expiring soonest is evicted; an attacker who sends 10000 other fresh names can therefore reset a name's count again, at the price of a password-hash round each. Failures are counted per account, so anyone who keeps guessing a real user's name locks that user out (1-15 minutes at a time); that is the existing behaviour and the audit log shows the source address. `GET /session` says how a session was opened (`method`: `password`, `passkey` or `oidc`).
 
 Code: `internal/server/auth/{auth,webauthn,oidc,policy}.go`, routes in
 `internal/server/mgmt/routes_authn.go`, schema in section 14 of
@@ -29,9 +29,12 @@ Code: `internal/server/auth/{auth,webauthn,oidc,policy}.go`, routes in
 A session's idle clock moves only when a person's request reaches the server (`last_seen`, written at
 most once a minute). The console's open event stream (`GET /events`) checks the session every 20 seconds
 so a revoked or expired session ends the stream, but that check does NOT renew it (`Store.Recheck`).
-The console also pauses its event-driven refetches while its tab is hidden (`document.visibilityState`)
-and runs one catch-up refetch when the tab becomes visible again; its timed polls already paused while
-hidden. So a **visible** tab that keeps polling or refetching stays signed in (a console on a wall
+The console pauses every timed poll and every event-driven refetch while its tab is hidden
+(`document.visibilityState`; the shared helpers are `web/src/lib/poll.ts` and `EventBus.onVisible`) and
+catches up once when the tab becomes visible again (events that arrived meanwhile are replayed, at most 50
+per subscription). A dropped event stream reconnects only once the tab is visible, because opening `GET /events`
+counts as activity; the reconnect then triggers a refetch. Only the idle watcher's own `GET /session`, sent after the idle limit has already passed,
+runs in a hidden tab. So a **visible** tab that keeps polling or refetching stays signed in (a console on a wall
 screen is meant to), and a **hidden** or forgotten tab reaches the 30-minute idle timeout. The 12-hour
 absolute limit applies to both.
 
@@ -40,10 +43,14 @@ absolute limit applies to both.
 - Creating one (`POST /me/tokens`) and starting or confirming two-factor enrolment (`POST /me/totp`,
   `/me/totp/confirm`) need a sign-in within the last **10 minutes** or the password again (`password`
   in the body; the answer is 400 `password_required` otherwise, a wrong password counts like a failed
-  sign-in), the same as adding or removing a passkey. A stolen session cookie alone therefore cannot mint
+  sign-in against the account, so someone holding a stolen cookie can lock the real user out for the
+  usual 1-15 minutes by guessing; `DELETE /me/totp` behaves the same), the same as adding or removing a
+  passkey. A user without a local password (single sign-on only) is told so (400, "single sign-on") on
+  the token, TOTP and passkey routes before any password is asked for. A stolen session cookie alone therefore cannot mint
   a key that outlives the cookie.
-- A token always expires. `ttl_hours` missing or 0 means **90 days**; the longest is **365 days**
-  (more is refused with 400).
+- A token always expires: it is bounded when it is created. `ttl_hours` missing or 0 means **90 days**; the
+  longest is **365 days** (more, a negative value, or a positive value that rounds to zero is refused with
+  400). A scrape token (docs/metrics.md) must therefore be re-created before it expires.
 - A user who signs in only through single sign-on (no local password) gets **no API tokens** (400), for
   the same reason as for passkeys and TOTP: a local key would bypass the identity provider and keep the
   last role it mapped, because the token's role is capped by `users.role`, which only the next

@@ -113,6 +113,10 @@ func (s *Service) SyncPutChunk(ctx context.Context, repo *Repo, idHex string, bl
 // identical snapshot that already exists is a success, a different one with the
 // same id is a conflict. Nothing becomes visible unless every chunk is present.
 func (s *Service) SyncPutSnapshot(ctx context.Context, repo *Repo, domain string, put api.SyncSnapshotPut) error {
+	// Whatever the outcome, this transfer's pin has done its job for this snapshot: committed (the snapshot
+	// protects its chunks), already present, or refused (the run's next Missing re-pins what it still needs).
+	// Without this, every run that ends on a repair or a refusal holds one of MaxSyncPinsPerPeer for 2 h.
+	defer s.releaseSyncPin(ctx, repo.ID)
 	m := put.Meta
 	if !datastore.ValidGroup(m.GroupID) || !format.ValidSnapshotID(m.SnapshotID) {
 		return bad("invalid group or snapshot id")
@@ -185,7 +189,6 @@ func (s *Service) SyncPutSnapshot(ctx context.Context, repo *Repo, domain string
 		return err
 	}
 	finish("committed")
-	s.releaseSyncPin(ctx, repo.ID)
 	var oid string
 	if err := s.DB.Pool().QueryRow(ctx, `INSERT INTO storage_objects (repository_id, host_name, project, name, kind, group_id, policy_name, retention_policy, first_seen_at, last_seen_at)
 		VALUES ($1,$2,$3,$4,$5,$6,$7,$7,$8,$8)

@@ -37,6 +37,8 @@ type GuestFilesOptions struct {
 	Timeout time.Duration
 	// MaxBytes bounds what is extracted on this host.
 	MaxBytes int64
+	// MaxEntries bounds the number of recovered entries (0 = archive.DefaultMaxEntries).
+	MaxEntries int
 }
 
 // GuestFilesResult reports a recovery.
@@ -160,7 +162,7 @@ func (e *Engine) RestoreGuestFiles(ctx context.Context, o GuestFilesOptions) (*G
 		return res, err
 	}
 	rep := &archive.ExtractReport{}
-	if err := archive.ExtractTar(tr, o.Dest, archive.ExtractOptions{Untrusted: true, MaxBytes: o.MaxBytes, Report: rep}); err != nil {
+	if err := archive.ExtractTar(tr, o.Dest, archive.ExtractOptions{Untrusted: true, MaxBytes: o.MaxBytes, MaxEntries: o.MaxEntries, Report: rep}); err != nil {
 		res.Report = rep
 		return res, fmt.Errorf("extracting the recovered files: %w", err)
 	}

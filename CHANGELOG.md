@@ -3,6 +3,18 @@
 Each release has a section `## VERSION`; `scripts/release.sh` copies it into
 `dist/RELEASE_NOTES.md` (and writes a stub when it is missing). Subsections use `###`.
 
+## Unreleased
+
+### Testing
+
+- S3 tests no longer need a MinIO binary (MinIO stopped distributing and maintaining its server). The tests,
+  `ibdemo` and the e2e tests use an in-process, strict S3 test server (`internal/s3test/s3fake`) with fault
+  injection and a request log. A conformance suite (`internal/s3test/conformance`) pins its behaviour: it
+  runs against the fake in every `go test`, mutation tests prove it fails against broken servers, and CI job
+  `s3-conformance` runs it, plus the datastore S3 tests, against versitygw. `INCUS_BACKUP_TEST_S3_*` still
+  points the same tests at any real S3 service. `INCUS_BACKUP_TEST_MINIO`, the MinIO CI job and
+  `.github/actions/minio` are gone; `ibdemo --minio` became `--s3` (default on). See `docs/testing-s3.md`.
+
 ## 0.1.0
 
 First release. All planned core backup functionality is implemented and sandbox-tested (real

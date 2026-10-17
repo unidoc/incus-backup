@@ -1,5 +1,6 @@
 // Counts of open alerts for the sidebar badge, kept current by the live 'alert' events (debounced),
 // a stream reconnect, and a one-minute poll as a safety net. Shared by every NavBadge.
+import { usePoll } from '@/lib/poll'
 import { reactive, watch } from 'vue'
 import { bus } from '@/api/events'
 import { cfg, list, type Alert } from '@/api/sections/config'
@@ -47,7 +48,7 @@ export function startAlertCounts() {
   started = true
   bus.onVisible('alert', () => refreshAlertCounts())
   bus.onVisible('resync', () => refreshAlertCounts())
-  setInterval(() => { if (document.visibilityState === 'visible') void refresh() }, 60_000)
+  usePoll(() => void refresh(), 60_000)
   watch(() => session.status, (s) => {
     if (s === 'authenticated') void refresh()
     else Object.assign(alertCounts, { critical: 0, warning: 0, acknowledged: 0, silenced: 0, loaded: false })

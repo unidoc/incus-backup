@@ -2,6 +2,7 @@
 // One server task, live: state, progress, message, the log (followed while it runs) and cancel.
 // <TaskPanel :id="taskId" @done="(t) => ..." />. Polls GET /tasks/{id}?after=<seq> every second while
 // the task is active and on every SSE "task" event; stops when it ended.
+import { visibleTimeout } from '@/lib/poll'
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import Icon from '@/components/icons/Icon.vue'
 import StatusPill from '@/components/StatusPill.vue'
@@ -26,14 +27,14 @@ const cancelling = ref(false)
 const follow = ref(true)
 const box = ref<HTMLElement | null>(null)
 let after = 0
-let timer: ReturnType<typeof setTimeout> | null = null
+let cancelTimer: (() => void) | null = null
 let ctrl: AbortController | null = null
 let alive = true
 let emittedDone = false
 
 async function poll() {
   if (!alive) return
-  if (timer) { clearTimeout(timer); timer = null }
+  if (cancelTimer) { cancelTimer(); cancelTimer = null }
   ctrl?.abort()
   ctrl = new AbortController()
   try {
@@ -53,12 +54,19 @@ async function poll() {
     if (isAbort(e)) return
     error.value = errorText(e)
   }
-  if (alive) timer = setTimeout(poll, 1000)
+  if (alive) cancelTimer = visibleTimeout(poll, 1000)
 }
 
 watch(() => props.id, () => { t.value = null; log.value = []; after = 0; emittedDone = false; void poll() }, { immediate: true })
-const off = bus.onVisible('task', (d) => { if ((d as { id?: string })?.id === props.id && t.value && isActive(t.value)) void poll() })
-onBeforeUnmount(() => { alive = false; off(); ctrl?.abort(); if (timer) clearTimeout(timer) })
+// Debounced like useJob: a hidden tab replays up to 50 queued events at once when it becomes visible, and each
+// poll() would abort the previous request.
+let debounce: ReturnType<typeof setTimeout> | null = null
+const off = bus.onVisible('task', (d) => {
+  if ((d as { id?: string })?.id !== props.id || !t.value || !isActive(t.value)) return
+  if (debounce) clearTimeout(debounce)
+  debounce = setTimeout(() => { debounce = null; void poll() }, 250)
+})
+onBeforeUnmount(() => { alive = false; off(); ctrl?.abort(); if (cancelTimer) cancelTimer(); if (debounce) clearTimeout(debounce) })
 
 function onScroll() {
   const el = box.value

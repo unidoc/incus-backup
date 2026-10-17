@@ -1,7 +1,7 @@
 package engine_test
 
 // Upload throughput client -> server over real mutual TLS (the production HTTP server), through a
-// TCP delay line, to a repository on the filesystem or on MinIO. One op uploads every chunk of a
+// TCP delay line, to a repository on the filesystem or on S3. One op uploads every chunk of a
 // snapshot of incompressible data (nothing is present on the server) and commits it.
 //
 //	INCUS_BACKUP_BENCH_UPLOAD_MB   payload size in MiB          (default 256)

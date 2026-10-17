@@ -617,7 +617,7 @@ func TestPresenceSetIsBuiltInTheBackground(t *testing.T) {
 	}
 }
 
-// On a real S3 service: the set is on for S3 repositories, Missing is served from it, and an
+// On an S3 service: the set is on for S3 repositories, Missing is served from it, and an
 // object deleted with a plain S3 client behind the server's back is still caught by Commit.
 func TestS3PresenceSetExternalDeletionCaughtAtCommit(t *testing.T) {
 	svc, bucket := s3test.NewBucket(t)
@@ -680,7 +680,7 @@ func TestShardedListingMatchesOneListing(t *testing.T) {
 		junk := []string{"chunks/zz/not-a-chunk", "chunks/0junk", "chunks/ab/cd/also-junk", "chunks/ff/x", "chunks/top"}
 		if _, isMem := s.b.(*MemBackend); isMem {
 			// an object and a "directory" of the same name: possible in S3, not on a filesystem (and
-			// not in MinIO, which stores objects as files)
+			// not on a service that stores objects as files, e.g. versitygw posix)
 			junk = append(junk, "chunks/ab")
 		}
 		for _, j := range junk {

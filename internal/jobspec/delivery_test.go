@@ -5,7 +5,11 @@ import (
 	"crypto/ecdh"
 	"crypto/rand"
 	"encoding/base64"
+	"errors"
+	"fmt"
 	"testing"
+
+	"github.com/unidoc/incus-backup/internal/archive"
 )
 
 // The browser digests what it sent, the host what the server forwarded (the server's canonical
@@ -57,5 +61,36 @@ func TestRequestDigestIsCanonicalAndBindsEveryParameter(t *testing.T) {
 	}
 	if _, err := RequestDigest(TypeFSExtract, []byte(`{"project":"default"}`)); err == nil {
 		t.Fatal("invalid parameters digested")
+	}
+}
+
+// guest_files may raise the recovered-entries cap, up to a hard ceiling; the default stays unchanged.
+func TestGuestFilesMaxEntriesIsBounded(t *testing.T) {
+	k, _ := ecdh.X25519().GenerateKey(rand.Reader)
+	pub := base64.StdEncoding.EncodeToString(k.PublicKey().Bytes())
+	with := func(extra string) error {
+		_, _, err := Validate(TypeGuestFiles, []byte(`{"project":"default","object":"instance/web/root","paths":["/etc"]`+extra+`,"recipient_public_key":"`+pub+`"}`))
+		return err
+	}
+	for _, ok := range []string{``, `,"max_entries":0`, `,"max_entries":5000000`, fmt.Sprintf(`,"max_entries":%d`, MaxEntriesCeiling)} {
+		if err := with(ok); err != nil {
+			t.Errorf("%q must validate: %v", ok, err)
+		}
+	}
+	for _, bad := range []string{`,"max_entries":-1`, fmt.Sprintf(`,"max_entries":%d`, MaxEntriesCeiling+1), `,"max_entries":"many"`} {
+		if err := with(bad); !errors.Is(err, ErrInvalid) {
+			t.Errorf("%q must be invalid, got %v", bad, err)
+		}
+	}
+	if MaxEntriesCeiling != 10_000_000 {
+		t.Errorf("the documented ceiling is 10,000,000, got %d", MaxEntriesCeiling)
+	}
+}
+
+// jobspec cannot import internal/archive (it is compiled to WebAssembly), so it mirrors the limits.
+func TestEntryLimitsMirrorArchive(t *testing.T) {
+	if MaxEntriesCeiling != archive.MaxEntriesCeiling || DefaultMaxEntries != archive.DefaultMaxEntries {
+		t.Errorf("jobspec limits %d/%d drifted from archive %d/%d",
+			DefaultMaxEntries, MaxEntriesCeiling, archive.DefaultMaxEntries, archive.MaxEntriesCeiling)
 	}
 }

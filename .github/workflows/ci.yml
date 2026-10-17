@@ -6,10 +6,10 @@ name: CI
 #
 # Test services (the tests FAIL, never skip, without them):
 #   * PostgreSQL 16: a service container, INCUS_BACKUP_TEST_DATABASE_URL (internal/testdb).
-#   * S3: MinIO built from source (dl.min.io no longer serves binaries) by the `minio` job and cached
-#     (.github/actions/minio). The `go` job runs one shared MinIO and sets INCUS_BACKUP_TEST_S3_*;
-#     the `race` job lets internal/s3test start the binary itself (INCUS_BACKUP_TEST_MINIO). Both
-#     wirings of internal/s3test are exercised.
+#   * S3: none to install. internal/s3test serves an in-process S3 fake (internal/s3test/s3fake): no
+#     external binary, no network. Its behaviour is pinned by the conformance suite
+#     (internal/s3test/conformance), which runs in `go` against the fake and in `s3-conformance`
+#     against a REAL S3 server (versitygw, pinned): see docs/testing-s3.md.
 #   * internal/demo and the e2e backend always run embedded PostgreSQL (no URL mode): its binaries
 #     are cached by .github/actions/embedded-postgres.
 on:
@@ -31,23 +31,8 @@ env:
   GOTOOLCHAIN: local # exactly the Go of go.mod (setup-go), never a silent toolchain download
 
 jobs:
-  minio:
-    name: MinIO test binary
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    steps:
-      - uses: actions/checkout@v7
-        with:
-          persist-credentials: false
-      - uses: actions/setup-go@v7
-        with:
-          go-version-file: go.mod
-          cache: false
-      - uses: ./.github/actions/minio
-
   go:
     name: Go (fmt, vet, build, test)
-    needs: minio
     runs-on: ubuntu-latest
     timeout-minutes: 40
     services:
@@ -73,24 +58,10 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
       - uses: ./.github/actions/webui-dist
-      - uses: ./.github/actions/minio
       - uses: ./.github/actions/embedded-postgres
       # The PostgreSQL service keeps its default settings on purpose: a full local run against one
       # shared server peaked at about 15 connections (default limit 100), and synchronous_commit=off
       # changes the plans TestPerfIndexesUsed (internal/server/service) asserts.
-      - name: Start a shared MinIO (internal/s3test uses INCUS_BACKUP_TEST_S3_*)
-        run: |
-          mkdir -p "$RUNNER_TEMP/minio-data"
-          MINIO_ROOT_USER=ciaccess MINIO_ROOT_PASSWORD=ci-secret-12345 MINIO_BROWSER=off \
-            nohup "$INCUS_BACKUP_TEST_MINIO" server "$RUNNER_TEMP/minio-data" \
-            --address 127.0.0.1:9000 --console-address 127.0.0.1:9001 --quiet > "$RUNNER_TEMP/minio.log" 2>&1 &
-          for _ in $(seq 100); do curl -fsS -o /dev/null http://127.0.0.1:9000/minio/health/live && break; sleep 0.3; done
-          curl -fsS -o /dev/null http://127.0.0.1:9000/minio/health/live
-          {
-            echo "INCUS_BACKUP_TEST_S3_ENDPOINT=127.0.0.1:9000"
-            echo "INCUS_BACKUP_TEST_S3_ACCESS_KEY=ciaccess"
-            echo "INCUS_BACKUP_TEST_S3_SECRET_KEY=ci-secret-12345"
-          } >> "$GITHUB_ENV"
       - name: gofmt
         run: bash scripts/ci.sh fmt
       - name: go vet
@@ -99,13 +70,61 @@ jobs:
         run: bash scripts/ci.sh build
       - name: go test
         run: bash scripts/ci.sh test
-      - name: MinIO log
+
+  # The same conformance suite and the datastore S3 tests, against a real, maintained S3 server:
+  # versitygw (Apache-2.0), posix backend, built from source at a pinned version. The commands were run
+  # locally against v1.9.0 (conformance 36/36 with lifecycle declared unsupported, datastore package
+  # passing), so this job is required (ci-ok). A newer versitygw is a deliberate bump of the pin.
+  s3-conformance:
+    name: "S3 conformance (real server, versitygw)"
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      VERSITYGW_VERSION: v1.9.0
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v7
+        with:
+          go-version-file: go.mod
+          cache-dependency-path: go.sum
+      - id: vgw-cache
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/incus-backup-ci/versitygw
+          key: versitygw-${{ runner.os }}-${{ runner.arch }}-${{ env.VERSITYGW_VERSION }}
+      - name: Build versitygw ${{ env.VERSITYGW_VERSION }} from source
+        if: steps.vgw-cache.outputs.cache-hit != 'true'
+        working-directory: ${{ runner.temp }}
+        run: |
+          mkdir -p ~/.cache/incus-backup-ci/versitygw
+          CGO_ENABLED=0 GOFLAGS='' GOBIN="$HOME/.cache/incus-backup-ci/versitygw" go install "github.com/versity/versitygw/cmd/versitygw@$VERSITYGW_VERSION"
+      - name: Start versitygw (posix backend, versioning enabled)
+        run: |
+          mkdir -p "$RUNNER_TEMP/vgw-data" "$RUNNER_TEMP/vgw-versions"
+          nohup "$HOME/.cache/incus-backup-ci/versitygw/versitygw" --port 127.0.0.1:7070 --access ciaccess --secret ci-secret-12345 \
+            posix --versioning-dir "$RUNNER_TEMP/vgw-versions" "$RUNNER_TEMP/vgw-data" > "$RUNNER_TEMP/vgw.log" 2>&1 &
+          for _ in $(seq 100); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7070/ || true)
+            [ "$code" = 403 ] && break # an unsigned request is refused: it is up
+            sleep 0.3
+          done
+          [ "$code" = 403 ]
+      - name: conformance suite + datastore S3 tests against versitygw
+        env:
+          INCUS_BACKUP_TEST_S3_ENDPOINT: 127.0.0.1:7070
+          INCUS_BACKUP_TEST_S3_ACCESS_KEY: ciaccess
+          INCUS_BACKUP_TEST_S3_SECRET_KEY: ci-secret-12345
+          # versitygw answers 501 NotImplemented to bucket lifecycle: declared, and then REQUIRED to fail cleanly
+          INCUS_BACKUP_TEST_S3_UNSUPPORTED: lifecycle
+        run: go test -count=1 ./internal/s3test/conformance ./internal/datastore
+      - name: versitygw log
         if: failure()
-        run: tail -n 100 "$RUNNER_TEMP/minio.log" || true
+        run: tail -n 100 "$RUNNER_TEMP/vgw.log" || true
 
   race:
     name: Go race detector (${{ matrix.shard }})
-    needs: minio
     runs-on: ubuntu-latest
     timeout-minutes: 40
     strategy:
@@ -135,7 +154,6 @@ jobs:
           go-version-file: go.mod
           cache-dependency-path: go.sum
       - uses: ./.github/actions/webui-dist
-      - uses: ./.github/actions/minio
       - name: go test -race -p 1 (shard ${{ matrix.shard }})
         env:
           RACE_SHARD: ${{ matrix.shard }}
@@ -169,7 +187,6 @@ jobs:
 
   e2e:
     name: End-to-end (Playwright, real server + demo; web-crypto in Chromium)
-    needs: minio
     runs-on: ubuntu-latest
     timeout-minutes: 45
     steps:
@@ -187,7 +204,6 @@ jobs:
           cache-dependency-path: |
             web/package-lock.json
             web-crypto/package-lock.json
-      - uses: ./.github/actions/minio
       - uses: ./.github/actions/embedded-postgres
       - name: Build web-crypto and the UI
         working-directory: web
@@ -349,7 +365,7 @@ jobs:
   ci-ok:
     name: ci-ok
     if: always()
-    needs: [minio, go, race, web, e2e, openapi-docs, packaging, vendor]
+    needs: [go, race, s3-conformance, web, e2e, openapi-docs, packaging, vendor]
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
